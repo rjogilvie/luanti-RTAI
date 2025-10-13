@@ -128,6 +128,13 @@ void set_default_settings()
 	settings->setDefault("enable_raytraced_culling", "true");
 	settings->setDefault("chat_weblink_color", "#8888FF");
 
+	// Tracking Export for RL Pipeline
+	settings->setDefault("enable_tracking_export", "false");
+	settings->setDefault("tracking_mode", "local");  // "local" or "network"
+	settings->setDefault("tracking_shm_name", "tracking_viewport");
+	settings->setDefault("tracking_port", "8000");
+	settings->setDefault("tracking_bind_addr", "0.0.0.0");
+
 	// Keymap
 #if USE_SDL2
 #define USEKEY2(name, value, _) settings->setDefault(name, value)

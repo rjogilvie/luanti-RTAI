@@ -39,6 +39,7 @@ set(BUILD_SERVER FALSE CACHE BOOL "Build server")
 set(BUILD_UNITTESTS TRUE CACHE BOOL "Build unittests")
 set(BUILD_BENCHMARKS FALSE CACHE BOOL "Build benchmarks")
 set(BUILD_DOCUMENTATION TRUE CACHE BOOL "Build documentation")
+set(ENABLE_TRACKING_EXPORT FALSE CACHE BOOL "Enable visual tracking pipeline export for RL training")
 
 set(DEFAULT_ENABLE_LTO TRUE)
 # by default don't enable on Debug builds to get faster builds
@@ -296,6 +297,34 @@ if(BUILD_UNITTESTS OR BUILD_BENCHMARKS)
 endif()
 
 add_subdirectory(lib/tiniergltf)
+
+# Tracking export integration for RL pipeline
+if(ENABLE_TRACKING_EXPORT)
+	message(STATUS "Tracking export enabled - looking for tracking pipeline libraries")
+
+	# Set paths to tracking pipeline
+	set(TRACKING_PIPELINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../visionlearningpipeline" CACHE PATH "Path to tracking pipeline")
+	set(TRACKING_INCLUDE_DIR "${TRACKING_PIPELINE_DIR}/core/include" "${TRACKING_PIPELINE_DIR}/environments/minetest")
+	set(TRACKING_LIB_DIR "${TRACKING_PIPELINE_DIR}/build")
+
+	# Find tracking libraries
+	find_library(TRACKING_CORE_LIB tracking_core PATHS "${TRACKING_LIB_DIR}" "${TRACKING_LIB_DIR}/core" NO_DEFAULT_PATH)
+	find_library(MINETEST_BRIDGE_LIB minetest_bridge PATHS "${TRACKING_LIB_DIR}" "${TRACKING_LIB_DIR}/environments/minetest" NO_DEFAULT_PATH)
+
+	if(TRACKING_CORE_LIB AND MINETEST_BRIDGE_LIB)
+		message(STATUS "  Found tracking_core: ${TRACKING_CORE_LIB}")
+		message(STATUS "  Found minetest_bridge: ${MINETEST_BRIDGE_LIB}")
+		message(STATUS "  Include dirs: ${TRACKING_INCLUDE_DIR}")
+
+		# Make libraries and includes available globally
+		set(TRACKING_LIBRARIES ${TRACKING_CORE_LIB} ${MINETEST_BRIDGE_LIB} CACHE INTERNAL "")
+		add_definitions(-DENABLE_TRACKING_EXPORT)
+	else()
+		message(WARNING "Tracking libraries not found - disabling tracking export")
+		message(WARNING "  Expected location: ${TRACKING_LIB_DIR}")
+		set(ENABLE_TRACKING_EXPORT OFF CACHE BOOL "Enable visual tracking pipeline export for RL training" FORCE)
+	endif()
+endif()
 
 # Subdirectories
 # Be sure to add all relevant definitions above this

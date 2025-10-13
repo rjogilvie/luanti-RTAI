@@ -61,6 +61,10 @@
 #include "util/tracy_wrapper.h"
 #include "item_visuals_manager.h"
 
+#ifdef ENABLE_TRACKING_EXPORT
+	#include "tracking_export.h"
+#endif
+
 #if USE_SOUND
 	#include "client/sound/sound_openal.h"
 #endif
@@ -857,6 +861,11 @@ private:
 #endif
 
 	float m_shutdown_progress = 0.0f;
+
+#ifdef ENABLE_TRACKING_EXPORT
+	// Tracking export for RL pipeline
+	std::unique_ptr<tracking::TrackingExporter> m_tracking_exporter;
+#endif
 };
 
 Game::Game() :
@@ -955,6 +964,45 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 	m_rendering_engine->initialize(client, hud);
 
 	m_game_formspec.init(client, m_rendering_engine, input);
+
+#ifdef ENABLE_TRACKING_EXPORT
+	// Initialize tracking export for RL pipeline
+	if (g_settings->getBool("enable_tracking_export")) {
+		m_tracking_exporter = std::make_unique<tracking::TrackingExporter>();
+
+		std::string tracking_mode = g_settings->get("tracking_mode");
+		bool initialized = false;
+
+		if (tracking_mode == "network") {
+			// Network mode: distributed training
+			int port = g_settings->getU16("tracking_port");
+			std::string bind_addr = g_settings->get("tracking_bind_addr");
+
+			infostream << "[Tracking] Initializing in NETWORK mode..." << std::endl;
+			infostream << "[Tracking]   Port: " << port << std::endl;
+			infostream << "[Tracking]   Bind address: " << bind_addr << std::endl;
+
+			initialized = m_tracking_exporter->initializeNetwork(port, bind_addr);
+		} else {
+			// Local mode: shared memory (default)
+			std::string shm_name = g_settings->get("tracking_shm_name");
+
+			infostream << "[Tracking] Initializing in LOCAL mode..." << std::endl;
+			infostream << "[Tracking]   Shared memory: " << shm_name << std::endl;
+
+			initialized = m_tracking_exporter->initializeLocal(shm_name);
+		}
+
+		if (initialized) {
+			infostream << "[Tracking] ✓ Tracking export initialized successfully" << std::endl;
+		} else {
+			errorstream << "[Tracking] ✗ Failed to initialize tracking export" << std::endl;
+			m_tracking_exporter.reset();
+		}
+	} else {
+		infostream << "[Tracking] Tracking export disabled (enable_tracking_export=false)" << std::endl;
+	}
+#endif
 
 	return true;
 }
@@ -1087,6 +1135,14 @@ void Game::run()
 
 void Game::shutdown()
 {
+#ifdef ENABLE_TRACKING_EXPORT
+	// Shutdown tracking export first
+	if (m_tracking_exporter) {
+		m_tracking_exporter->shutdown();
+		m_tracking_exporter.reset();
+	}
+#endif
+
 	// Delete text and menus first
 	m_game_ui->clearText();
 	m_game_formspec.reset();
@@ -4148,6 +4204,13 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 	}
 
 	this->driver->endScene();
+
+#ifdef ENABLE_TRACKING_EXPORT
+	// Export framebuffer for RL pipeline (after rendering is complete)
+	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
+		m_tracking_exporter->exportFramebuffer(this->driver);
+	}
+#endif
 
 	stats->drawtime = tt_draw.stop(true);
 	g_profiler->graphAdd("Draw scene [us]", stats->drawtime);

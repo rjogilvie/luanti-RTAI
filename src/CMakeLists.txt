@@ -590,6 +590,11 @@ if(BUILD_CLIENT)
 		${FREETYPE_INCLUDE_DIRS}
 		${SOUND_INCLUDE_DIRS}
 	)
+
+	# Add tracking export includes if enabled
+	if(ENABLE_TRACKING_EXPORT)
+		include_directories(${TRACKING_INCLUDE_DIR})
+	endif()
 endif()
 
 if(USE_CURL)
@@ -758,6 +763,9 @@ if(BUILD_CLIENT)
 	endif()
 	if(BUILD_WITH_TRACY)
 		target_link_libraries(${PROJECT_NAME} Tracy::TracyClient)
+	endif()
+	if(ENABLE_TRACKING_EXPORT)
+		target_link_libraries(${PROJECT_NAME} ${TRACKING_LIBRARIES})
 	endif()
 
 	if(PRECOMPILE_HEADERS)
