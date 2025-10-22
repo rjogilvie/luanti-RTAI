@@ -3907,6 +3907,14 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	LocalPlayer *player = client->getEnv().getLocalPlayer();
 
 	/*
+		Apply camera control from tracking export (if enabled)
+	*/
+
+	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
+		m_tracking_exporter->applyCameraControl(player);
+	}
+
+	/*
 		Frame time
 	*/
 

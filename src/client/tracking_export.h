@@ -106,6 +106,17 @@ public:
 	bool getAgentActions(LocalPlayer* player);
 
 	/**
+	 * Apply camera control from UDP network
+	 * Receives camera state (yaw/pitch) and applies directly to player
+	 * Used for RL agent camera control in network mode
+	 * Called each frame before rendering
+	 *
+	 * @param player Local player instance to control
+	 * @return true if camera state was applied
+	 */
+	bool applyCameraControl(LocalPlayer* player);
+
+	/**
 	 * Register a reward event from game logic
 	 * Used for RL training
 	 *

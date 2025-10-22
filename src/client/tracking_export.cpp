@@ -18,6 +18,7 @@
 #include "frame_distributor.h"
 #include "session_coordinator.h"
 #include "frame_formats.h"
+#include "network_transport.h"
 #endif
 
 namespace tracking {
@@ -29,6 +30,10 @@ struct TrackingExporter::Impl {
 
 	// Network mode (UDP frame broadcasting)
 	std::unique_ptr<network::FrameDistributor> frame_distributor;
+
+	// Camera control (UDP receiver for agent control)
+	std::unique_ptr<network::UDPSocket> camera_control_socket;
+	uint16_t camera_control_port = 8000;
 
 	// Mode flag
 	bool network_mode = false;  // false = local (shared memory), true = network
@@ -123,6 +128,24 @@ bool TrackingExporter::initializeNetwork(int port, const std::string& bind_addr,
 	infostream << "[Tracking]   Ready to broadcast frames to all listeners" << std::endl;
 	infostream << "[Tracking]   (Receivers should bind to port " << port << ")" << std::endl;
 
+	// Initialize camera control receiver (UDP)
+	m_impl->camera_control_socket = std::make_unique<network::UDPSocket>();
+	network::Address control_bind_addr;
+	control_bind_addr.host = bind_addr;
+	control_bind_addr.port = m_impl->camera_control_port;
+
+	if (m_impl->camera_control_socket->Bind(control_bind_addr)) {
+		m_impl->camera_control_socket->SetNonBlocking(true);
+		infostream << "[Tracking] ✓ Camera control listening on UDP port "
+		           << m_impl->camera_control_port << std::endl;
+		infostream << "[Tracking]   Ready to receive camera control commands" << std::endl;
+	} else {
+		warningstream << "[Tracking] ✗ Failed to bind camera control port "
+		              << m_impl->camera_control_port << std::endl;
+		warningstream << "[Tracking]   Camera control will be unavailable" << std::endl;
+		m_impl->camera_control_socket.reset();
+	}
+
 	return true;
 #else
 	warningstream << "[Tracking] Tracking export not compiled in (ENABLE_TRACKING_EXPORT=OFF)"
@@ -147,6 +170,13 @@ void TrackingExporter::shutdown()
 		infostream << "[Tracking] Stopping frame distributor..." << std::endl;
 		// No explicit shutdown needed for FrameDistributor - just reset
 		m_impl->frame_distributor.reset();
+	}
+
+	// Shutdown camera control socket
+	if (m_impl->camera_control_socket) {
+		infostream << "[Tracking] Closing camera control socket..." << std::endl;
+		m_impl->camera_control_socket->Close();
+		m_impl->camera_control_socket.reset();
 	}
 
 	// Shutdown local mode components
@@ -344,6 +374,44 @@ bool TrackingExporter::getAgentActions(LocalPlayer* player)
 	// - Actions (jump, dig, place)
 	//
 	// For now, this is a placeholder
+
+	return false;
+#else
+	return false;
+#endif
+}
+
+bool TrackingExporter::applyCameraControl(LocalPlayer* player)
+{
+#ifdef ENABLE_TRACKING_EXPORT
+	if (!m_impl->active || !m_impl->camera_control_socket || !player)
+		return false;
+
+	// Camera state packet format:
+	// uint64_t timestamp_us (8 bytes)
+	// float yaw (4 bytes)
+	// float pitch (4 bytes)
+	// Total: 16 bytes minimum
+
+	uint8_t buffer[32];
+	network::Address sender;
+	int received = m_impl->camera_control_socket->ReceiveFrom(buffer, sizeof(buffer), sender);
+
+	if (received >= 16) {  // Minimum packet size
+		uint64_t timestamp_us;
+		float yaw, pitch;
+
+		// Deserialize packet
+		std::memcpy(&timestamp_us, buffer + 0, 8);
+		std::memcpy(&yaw, buffer + 8, 4);
+		std::memcpy(&pitch, buffer + 12, 4);
+
+		// Apply camera angles directly to player
+		player->setYaw(yaw);
+		player->setPitch(pitch);
+
+		return true;
+	}
 
 	return false;
 #else
