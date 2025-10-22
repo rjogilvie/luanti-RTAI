@@ -977,12 +977,14 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 			// Network mode: distributed training
 			int port = g_settings->getU16("tracking_port");
 			std::string bind_addr = g_settings->get("tracking_bind_addr");
+			std::string broadcast_addr = g_settings->get("tracking_broadcast_addr");
 
 			infostream << "[Tracking] Initializing in NETWORK mode..." << std::endl;
 			infostream << "[Tracking]   Port: " << port << std::endl;
 			infostream << "[Tracking]   Bind address: " << bind_addr << std::endl;
+			infostream << "[Tracking]   Broadcast address: " << broadcast_addr << std::endl;
 
-			initialized = m_tracking_exporter->initializeNetwork(port, bind_addr);
+			initialized = m_tracking_exporter->initializeNetwork(port, bind_addr, broadcast_addr);
 		} else {
 			// Local mode: shared memory (default)
 			std::string shm_name = g_settings->get("tracking_shm_name");

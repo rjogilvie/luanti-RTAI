@@ -1,4 +1,22 @@
-./cmake-build-*
-./build/*
-./cache/*
-Dockerfile
+# Exclude build artifacts from Docker context
+build/
+bin/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Exclude git
+.git/
+.gitignore
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Exclude large unnecessary files
+docs/
+docker-test/

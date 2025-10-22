@@ -82,23 +82,33 @@ bool TrackingExporter::initializeLocal(const std::string& shared_memory_name)
 #endif
 }
 
-bool TrackingExporter::initializeNetwork(int port, const std::string& bind_addr)
+bool TrackingExporter::initializeNetwork(int port, const std::string& bind_addr,
+                                          const std::string& broadcast_addr)
 {
 #ifdef ENABLE_TRACKING_EXPORT
 	infostream << "[Tracking] Initializing tracking export system (NETWORK MODE)..." << std::endl;
 	infostream << "[Tracking]   UDP Port: " << port << std::endl;
 	infostream << "[Tracking]   Bind address: " << bind_addr << std::endl;
+	infostream << "[Tracking]   Broadcast address: " << broadcast_addr << std::endl;
 
 	// Create frame distributor (broadcasts frames via UDP)
 	m_impl->frame_distributor = std::make_unique<network::FrameDistributor>();
-	network::Address udp_addr;
-	udp_addr.port = port;
-	udp_addr.host = bind_addr;
 
-	if (!m_impl->frame_distributor->Initialize(udp_addr)) {
-		errorstream << "[Tracking] Failed to initialize frame distributor on UDP port " << port << std::endl;
+	// Bind to any available port (sender doesn't need specific port)
+	network::Address sender_addr;
+	sender_addr.port = 0;  // 0 = let OS choose available port
+	sender_addr.host = bind_addr;
+
+	if (!m_impl->frame_distributor->Initialize(sender_addr)) {
+		errorstream << "[Tracking] Failed to initialize frame distributor" << std::endl;
 		return false;
 	}
+
+	// Enable broadcast mode (send TO destination port)
+	network::Address bcast_addr;
+	bcast_addr.port = port;  // Receivers listen on this port
+	bcast_addr.host = broadcast_addr;  // Configurable broadcast address
+	m_impl->frame_distributor->SetBroadcastMode(true, bcast_addr);
 
 	// Enable compression for network mode (reduces bandwidth)
 	m_impl->frame_distributor->SetCompressionEnabled(true);
@@ -108,10 +118,10 @@ bool TrackingExporter::initializeNetwork(int port, const std::string& bind_addr)
 	m_impl->active = true;
 
 	infostream << "[Tracking] ✓ Tracking export initialized (NETWORK MODE)" << std::endl;
-	infostream << "[Tracking]   UDP port: " << port << std::endl;
+	infostream << "[Tracking]   Broadcasting TO: " << broadcast_addr << ":" << port << std::endl;
 	infostream << "[Tracking]   Compression: ZSTD" << std::endl;
-	infostream << "[Tracking]   Ready to broadcast frames" << std::endl;
-	infostream << "[Tracking]   Note: Clients must connect to this UDP port to receive frames" << std::endl;
+	infostream << "[Tracking]   Ready to broadcast frames to all listeners" << std::endl;
+	infostream << "[Tracking]   (Receivers should bind to port " << port << ")" << std::endl;
 
 	return true;
 #else
@@ -165,7 +175,11 @@ bool TrackingExporter::isActive() const
 
 bool TrackingExporter::isNetworkMode() const
 {
+#ifdef ENABLE_TRACKING_EXPORT
 	return m_impl->network_mode;
+#else
+	return false;
+#endif
 }
 
 void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)

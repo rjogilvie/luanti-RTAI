@@ -51,7 +51,8 @@ public:
 	 * @param bind_addr Address to bind to (default: "0.0.0.0" - all interfaces)
 	 * @return true if initialization succeeded
 	 */
-	bool initializeNetwork(int port = 8000, const std::string& bind_addr = "0.0.0.0");
+	bool initializeNetwork(int port = 8000, const std::string& bind_addr = "0.0.0.0",
+	                       const std::string& broadcast_addr = "255.255.255.255");
 
 	/**
 	 * Legacy initialize method - defaults to local mode

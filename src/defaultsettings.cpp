@@ -134,6 +134,7 @@ void set_default_settings()
 	settings->setDefault("tracking_shm_name", "tracking_viewport");
 	settings->setDefault("tracking_port", "8000");
 	settings->setDefault("tracking_bind_addr", "0.0.0.0");
+	settings->setDefault("tracking_broadcast_addr", "255.255.255.255");  // Use "127.0.0.1" for localhost testing
 
 	// Keymap
 #if USE_SDL2
