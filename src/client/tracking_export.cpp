@@ -19,6 +19,7 @@
 #include "session_coordinator.h"
 #include "frame_formats.h"
 #include "network_transport.h"
+#include "action_distributor.h"
 #endif
 
 namespace tracking {
@@ -387,33 +388,146 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 	if (!m_impl->active || !m_impl->camera_control_socket || !player)
 		return false;
 
-	// Camera state packet format:
-	// uint64_t timestamp_us (8 bytes)
-	// float yaw (4 bytes)
-	// float pitch (4 bytes)
-	// Total: 16 bytes minimum
-
-	uint8_t buffer[32];
+	// Receive ActionPacket from UDP socket
+	uint8_t buffer[512];  // Large enough for ActionPacket
 	network::Address sender;
 	int received = m_impl->camera_control_socket->ReceiveFrom(buffer, sizeof(buffer), sender);
 
-	if (received >= 16) {  // Minimum packet size
-		uint64_t timestamp_us;
-		float yaw, pitch;
-
-		// Deserialize packet
-		std::memcpy(&timestamp_us, buffer + 0, 8);
-		std::memcpy(&yaw, buffer + 8, 4);
-		std::memcpy(&pitch, buffer + 12, 4);
-
-		// Apply camera angles directly to player
-		player->setYaw(yaw);
-		player->setPitch(pitch);
-
-		return true;
+	if (received < static_cast<int>(network::ActionPacket::PACKET_SIZE)) {
+		return false;  // No packet or incomplete packet
 	}
 
-	return false;
+	// Deserialize ActionPacket
+	auto packet_opt = network::ActionPacket::Deserialize(buffer, received);
+	if (!packet_opt) {
+		m_action_stats.actions_failed++;
+		return false;
+	}
+
+	const network::ActionPacket& packet = *packet_opt;
+	const GazeCommand& cmd = packet.command;
+
+	// Update statistics
+	m_action_stats.actions_received++;
+
+	// Calculate latency (send_time → receive_time)
+	auto now = std::chrono::high_resolution_clock::now();
+	uint64_t receive_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
+		now.time_since_epoch()).count();
+
+	double latency_us = static_cast<double>(receive_time_us - packet.send_time_us);
+
+	// Update latency statistics
+	if (m_action_stats.actions_applied == 0) {
+		// First action
+		m_action_stats.average_latency_us = latency_us;
+		m_action_stats.min_latency_us = latency_us;
+		m_action_stats.max_latency_us = latency_us;
+	} else {
+		// Exponential moving average
+		m_action_stats.average_latency_us = 0.9 * m_action_stats.average_latency_us + 0.1 * latency_us;
+
+		// Update min/max
+		if (latency_us < m_action_stats.min_latency_us) {
+			m_action_stats.min_latency_us = latency_us;
+		}
+		if (latency_us > m_action_stats.max_latency_us) {
+			m_action_stats.max_latency_us = latency_us;
+		}
+	}
+
+	m_action_stats.last_action_time_us = receive_time_us;
+
+	// Get current camera state
+	float current_yaw = player->getYaw();
+	float current_pitch = player->getPitch();
+
+	// Apply command based on type
+	bool applied = false;
+	switch (cmd.type) {
+		case CMD_SACCADE: {
+			// Ballistic movement to target
+			// Convert viewport coordinates (0-256) to camera angles
+			// Viewport center (128, 128) = current look direction (0, 0)
+			// Positive X = right, Positive Y = down
+
+			float dx = cmd.target_x - 128.0f;  // Pixels from center
+			float dy = cmd.target_y - 128.0f;
+
+			// Convert to degrees (rough approximation: 1 pixel ≈ 0.5 degrees)
+			float yaw_delta = dx * 0.5f;
+			float pitch_delta = -dy * 0.5f;  // Invert Y axis
+
+			player->setYaw(current_yaw + yaw_delta);
+			player->setPitch(current_pitch + pitch_delta);
+			applied = true;
+			break;
+		}
+
+		case CMD_PURSUIT: {
+			// Smooth tracking with velocity
+			// Use velocity to predict where to look
+			float yaw_delta = cmd.velocity_x * 0.5f;
+			float pitch_delta = -cmd.velocity_y * 0.5f;
+
+			player->setYaw(current_yaw + yaw_delta);
+			player->setPitch(current_pitch + pitch_delta);
+			applied = true;
+			break;
+		}
+
+		case CMD_FIXATION: {
+			// Maintain current position (with small corrections)
+			// Target represents desired fixation point
+			float dx = cmd.target_x - 128.0f;
+			float dy = cmd.target_y - 128.0f;
+
+			// Apply small correction (scaled down for stability)
+			float yaw_delta = dx * 0.1f;
+			float pitch_delta = -dy * 0.1f;
+
+			player->setYaw(current_yaw + yaw_delta);
+			player->setPitch(current_pitch + pitch_delta);
+			applied = true;
+			break;
+		}
+
+		case CMD_DRIFT: {
+			// Natural drift correction
+			// Similar to fixation but even smaller corrections
+			float dx = cmd.target_x - 128.0f;
+			float dy = cmd.target_y - 128.0f;
+
+			float yaw_delta = dx * 0.05f;
+			float pitch_delta = -dy * 0.05f;
+
+			player->setYaw(current_yaw + yaw_delta);
+			player->setPitch(current_pitch + pitch_delta);
+			applied = true;
+			break;
+		}
+
+		case CMD_RESET: {
+			// Return to center (0, 0)
+			player->setYaw(0.0f);
+			player->setPitch(0.0f);
+			applied = true;
+			break;
+		}
+
+		case CMD_NONE:
+		default:
+			// No action
+			break;
+	}
+
+	if (applied) {
+		m_action_stats.actions_applied++;
+	} else {
+		m_action_stats.actions_failed++;
+	}
+
+	return applied;
 #else
 	return false;
 #endif
@@ -433,6 +547,16 @@ void TrackingExporter::registerRewardEvent(const std::string& event_type, float 
 
 	m_impl->bridge->RegisterRewardEvent(event);
 #endif
+}
+
+TrackingExporter::ActionStats TrackingExporter::getActionStats() const
+{
+	return m_action_stats;
+}
+
+void TrackingExporter::resetActionStats()
+{
+	m_action_stats.Reset();
 }
 
 } // namespace tracking

@@ -125,6 +125,40 @@ public:
 	 */
 	void registerRewardEvent(const std::string& event_type, float reward_value);
 
+	/**
+	 * Action feedback statistics
+	 */
+	struct ActionStats {
+		u64 actions_received = 0;     // Total actions received
+		u64 actions_applied = 0;      // Actions successfully applied
+		u64 actions_failed = 0;       // Actions that failed to apply
+		double average_latency_us = 0.0;  // Average action latency (send → receive)
+		double min_latency_us = 0.0;  // Minimum latency
+		double max_latency_us = 0.0;  // Maximum latency
+		u64 last_action_time_us = 0;  // Timestamp of last action received
+
+		void Reset() {
+			actions_received = 0;
+			actions_applied = 0;
+			actions_failed = 0;
+			average_latency_us = 0.0;
+			min_latency_us = 0.0;
+			max_latency_us = 0.0;
+			last_action_time_us = 0;
+		}
+	};
+
+	/**
+	 * Get action feedback statistics
+	 * @return Current action statistics
+	 */
+	ActionStats getActionStats() const;
+
+	/**
+	 * Reset action feedback statistics
+	 */
+	void resetActionStats();
+
 private:
 	struct Impl;
 	Impl* m_impl = nullptr;
@@ -137,6 +171,9 @@ private:
 	// Statistics
 	u64 m_frames_exported = 0;
 	u64 m_frames_failed = 0;
+
+	// Action feedback statistics
+	ActionStats m_action_stats;
 };
 
 } // namespace tracking
