@@ -11,6 +11,8 @@
 #include <memory>
 #include <vector>
 #include <chrono>
+#include <unordered_map>
+#include <cmath>
 
 // Include tracking pipeline headers OUTSIDE namespace
 #ifdef ENABLE_TRACKING_EXPORT
@@ -20,6 +22,7 @@
 #include "frame_formats.h"
 #include "network_transport.h"
 #include "action_distributor.h"
+#include "target_control.h"
 #endif
 
 namespace tracking {
@@ -35,6 +38,21 @@ struct TrackingExporter::Impl {
 	// Camera control (UDP receiver for agent control)
 	std::unique_ptr<network::UDPSocket> camera_control_socket;
 	uint16_t camera_control_port = 8000;
+
+	// Target control (UDP receiver for target commands)
+	std::unique_ptr<network::UDPSocket> target_control_socket;
+	uint16_t target_control_port = 8002;
+
+	// Active targets (target_id -> TargetPacket)
+	std::unordered_map<uint64_t, network::TargetPacket> active_targets;
+
+	// Target motion state (for pattern updates)
+	struct TargetState {
+		uint64_t start_time_us = 0;
+		float initial_x = 0.0f;
+		float initial_y = 0.0f;
+	};
+	std::unordered_map<uint64_t, TargetState> target_states;
 
 	// Mode flag
 	bool network_mode = false;  // false = local (shared memory), true = network
@@ -145,6 +163,24 @@ bool TrackingExporter::initializeNetwork(int port, const std::string& bind_addr,
 		              << m_impl->camera_control_port << std::endl;
 		warningstream << "[Tracking]   Camera control will be unavailable" << std::endl;
 		m_impl->camera_control_socket.reset();
+	}
+
+	// Initialize target control receiver (UDP)
+	m_impl->target_control_socket = std::make_unique<network::UDPSocket>();
+	network::Address target_bind_addr;
+	target_bind_addr.host = bind_addr;
+	target_bind_addr.port = m_impl->target_control_port;
+
+	if (m_impl->target_control_socket->Bind(target_bind_addr)) {
+		m_impl->target_control_socket->SetNonBlocking(true);
+		infostream << "[Tracking] ✓ Target control listening on UDP port "
+		           << m_impl->target_control_port << std::endl;
+		infostream << "[Tracking]   Ready to receive target spawn/control commands" << std::endl;
+	} else {
+		warningstream << "[Tracking] ✗ Failed to bind target control port "
+		              << m_impl->target_control_port << std::endl;
+		warningstream << "[Tracking]   Target control will be unavailable" << std::endl;
+		m_impl->target_control_socket.reset();
 	}
 
 	return true;
@@ -557,6 +593,260 @@ TrackingExporter::ActionStats TrackingExporter::getActionStats() const
 void TrackingExporter::resetActionStats()
 {
 	m_action_stats.Reset();
+}
+
+int TrackingExporter::processTargetCommands()
+{
+#ifdef ENABLE_TRACKING_EXPORT
+	if (!m_impl->active || !m_impl->network_mode || !m_impl->target_control_socket) {
+		return 0;
+	}
+
+	int commands_processed = 0;
+	uint8_t buffer[512];
+	network::Address sender;
+
+	// Process up to 10 commands per frame (prevent overload)
+	for (int i = 0; i < 10; i++) {
+		int received = m_impl->target_control_socket->ReceiveFrom(buffer, sizeof(buffer), sender);
+
+		if (received < static_cast<int>(network::TargetPacket::PACKET_SIZE)) {
+			break;  // No more packets or invalid size
+		}
+
+		// Deserialize TargetPacket
+		auto packet_opt = network::TargetPacket::Deserialize(buffer, received);
+		if (!packet_opt) {
+			warningstream << "[Tracking] Failed to deserialize TargetPacket" << std::endl;
+			continue;
+		}
+
+		const network::TargetPacket& packet = *packet_opt;
+
+		// Process command
+		switch (packet.command_type) {
+			case network::TARGET_CMD_SPAWN: {
+				// Add new target to active targets
+				m_impl->active_targets[packet.target_id] = packet;
+
+				// Initialize target state for motion patterns
+				Impl::TargetState state;
+				auto now = std::chrono::high_resolution_clock::now();
+				state.start_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
+					now.time_since_epoch()).count();
+				state.initial_x = packet.position_x;
+				state.initial_y = packet.position_y;
+				m_impl->target_states[packet.target_id] = state;
+
+				infostream << "[Tracking] Target spawned: ID=" << packet.target_id
+				           << " at (" << packet.position_x << "," << packet.position_y << ")"
+				           << " type=" << network::GetTargetTypeName(packet.target_type) << std::endl;
+				break;
+			}
+
+			case network::TARGET_CMD_UPDATE: {
+				// Update existing target
+				auto it = m_impl->active_targets.find(packet.target_id);
+				if (it != m_impl->active_targets.end()) {
+					it->second = packet;
+				}
+				break;
+			}
+
+			case network::TARGET_CMD_DELETE: {
+				// Remove target
+				m_impl->active_targets.erase(packet.target_id);
+				m_impl->target_states.erase(packet.target_id);
+				infostream << "[Tracking] Target deleted: ID=" << packet.target_id << std::endl;
+				break;
+			}
+
+			case network::TARGET_CMD_PATTERN: {
+				// Update motion pattern only
+				auto it = m_impl->active_targets.find(packet.target_id);
+				if (it != m_impl->active_targets.end()) {
+					it->second.motion = packet.motion;
+
+					// Reset motion state
+					auto& state = m_impl->target_states[packet.target_id];
+					auto now = std::chrono::high_resolution_clock::now();
+					state.start_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
+						now.time_since_epoch()).count();
+					state.initial_x = it->second.position_x;
+					state.initial_y = it->second.position_y;
+				}
+				break;
+			}
+
+			default:
+				warningstream << "[Tracking] Unknown target command type: "
+				              << static_cast<int>(packet.command_type) << std::endl;
+				continue;
+		}
+
+		commands_processed++;
+	}
+
+	return commands_processed;
+#else
+	return 0;
+#endif
+}
+
+void TrackingExporter::renderTargets(video::IVideoDriver* driver)
+{
+#ifdef ENABLE_TRACKING_EXPORT
+	if (!m_impl->active || !driver || m_impl->active_targets.empty()) {
+		return;
+	}
+
+	// Get current time for motion pattern updates
+	auto now = std::chrono::high_resolution_clock::now();
+	uint64_t current_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
+		now.time_since_epoch()).count();
+
+	// Update and render each target
+	for (auto& pair : m_impl->active_targets) {
+		uint64_t target_id = pair.first;
+		network::TargetPacket& target = pair.second;
+		const auto& state_it = m_impl->target_states.find(target_id);
+
+		if (state_it == m_impl->target_states.end()) {
+			continue;  // No state for this target
+		}
+
+		const Impl::TargetState& state = state_it->second;
+
+		// Update position based on motion pattern
+		float render_x = target.position_x;
+		float render_y = target.position_y;
+
+		if (target.motion.pattern != network::MOTION_STATIC) {
+			float elapsed_sec = (current_time_us - state.start_time_us) / 1000000.0f;
+
+			switch (target.motion.pattern) {
+				case network::MOTION_LINEAR: {
+					render_x = state.initial_x + target.motion.velocity_x * elapsed_sec;
+					render_y = state.initial_y + target.motion.velocity_y * elapsed_sec;
+					break;
+				}
+
+				case network::MOTION_CIRCULAR: {
+					float angle = 2.0f * M_PI * target.motion.frequency * elapsed_sec + target.motion.phase;
+					render_x = state.initial_x + target.motion.amplitude * std::cos(angle);
+					render_y = state.initial_y + target.motion.amplitude * std::sin(angle);
+					break;
+				}
+
+				case network::MOTION_SINUSOIDAL: {
+					float phase = 2.0f * M_PI * target.motion.frequency * elapsed_sec + target.motion.phase;
+					render_x = state.initial_x + target.motion.amplitude * std::sin(phase);
+					render_y = state.initial_y;
+					break;
+				}
+
+				case network::MOTION_RANDOM:
+					// Random walk would require storing random state - skip for now
+					break;
+
+				case network::MOTION_CUSTOM:
+					// Use position from packet directly
+					break;
+
+				default:
+					break;
+			}
+
+			// Update target position for next frame
+			target.position_x = render_x;
+			target.position_y = render_y;
+		}
+
+		// Clamp to viewport bounds (0-256)
+		render_x = std::max(0.0f, std::min(256.0f, render_x));
+		render_y = std::max(0.0f, std::min(256.0f, render_y));
+
+		// Convert viewport coordinates (0-256) to screen coordinates
+		// Viewport is rendered in top-left corner at 256x256
+		int screen_x = static_cast<int>(render_x);
+		int screen_y = static_cast<int>(render_y);
+
+		// Create Irrlicht color from target appearance
+		video::SColor color(
+			target.appearance.alpha,
+			target.appearance.red,
+			target.appearance.green,
+			target.appearance.blue
+		);
+
+		// Render based on target type
+		switch (target.target_type) {
+			case network::TARGET_CIRCLE: {
+				// Draw circle as filled disk using small rectangles
+				int radius = static_cast<int>(target.appearance.size / 2.0f);
+				// Approximate circle with rectangles
+				for (int dy = -radius; dy <= radius; dy++) {
+					int width = static_cast<int>(std::sqrt(radius * radius - dy * dy));
+					if (width > 0) {
+						core::rect<s32> rect(
+							screen_x - width,
+							screen_y + dy,
+							screen_x + width,
+							screen_y + dy + 1
+						);
+						driver->draw2DRectangle(color, rect);
+					}
+				}
+				break;
+			}
+
+			case network::TARGET_SQUARE: {
+				// Draw filled square
+				int half_size = static_cast<int>(target.appearance.size / 2.0f);
+				core::rect<s32> rect(
+					screen_x - half_size,
+					screen_y - half_size,
+					screen_x + half_size,
+					screen_y + half_size
+				);
+				driver->draw2DRectangle(color, rect);
+				break;
+			}
+
+			case network::TARGET_CROSS: {
+				// Draw crosshair
+				int half_size = static_cast<int>(target.appearance.size / 2.0f);
+				int thickness = static_cast<int>(target.appearance.thickness);
+
+				// Horizontal line
+				core::rect<s32> h_line(
+					screen_x - half_size,
+					screen_y - thickness / 2,
+					screen_x + half_size,
+					screen_y + thickness / 2
+				);
+				driver->draw2DRectangle(color, h_line);
+
+				// Vertical line
+				core::rect<s32> v_line(
+					screen_x - thickness / 2,
+					screen_y - half_size,
+					screen_x + thickness / 2,
+					screen_y + half_size
+				);
+				driver->draw2DRectangle(color, v_line);
+				break;
+			}
+
+			case network::TARGET_ENTITY:
+				// Entity-based targets handled by Lua mod, not rendered here
+				break;
+
+			default:
+				break;
+		}
+	}
+#endif
 }
 
 } // namespace tracking

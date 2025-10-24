@@ -159,6 +159,24 @@ public:
 	 */
 	void resetActionStats();
 
+	/**
+	 * Process target control commands from UDP
+	 * Receives TargetPackets and manages active targets
+	 * Called each frame before rendering
+	 *
+	 * @return Number of commands processed
+	 */
+	int processTargetCommands();
+
+	/**
+	 * Render active targets as HUD overlays
+	 * Draws targets on top of rendered frame
+	 * Called after exportFramebuffer(), before endScene()
+	 *
+	 * @param driver Irrlicht video driver for rendering
+	 */
+	void renderTargets(video::IVideoDriver* driver);
+
 private:
 	struct Impl;
 	Impl* m_impl = nullptr;

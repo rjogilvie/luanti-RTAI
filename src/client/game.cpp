@@ -3914,6 +3914,15 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 		m_tracking_exporter->applyCameraControl(player);
 	}
 
+#ifdef ENABLE_TRACKING_EXPORT
+	/*
+		Process target control commands from tracking export
+	*/
+	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
+		m_tracking_exporter->processTargetCommands();
+	}
+#endif
+
 	/*
 		Frame time
 	*/
@@ -4212,6 +4221,15 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 					core::rect<s32>(0, 0, screensize.X, screensize.Y),
 					NULL);
 	}
+
+#ifdef ENABLE_TRACKING_EXPORT
+	/*
+		Render tracking targets as HUD overlays (before endScene)
+	*/
+	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
+		m_tracking_exporter->renderTargets(this->driver);
+	}
+#endif
 
 	this->driver->endScene();
 
