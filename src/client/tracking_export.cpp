@@ -23,6 +23,7 @@
 #include "network_transport.h"
 #include "action_distributor.h"
 #include "target_control.h"
+#include "reward_signal.h"
 #endif
 
 namespace tracking {
@@ -56,6 +57,11 @@ struct TrackingExporter::Impl {
 
 	// Mode flag
 	bool network_mode = false;  // false = local (shared memory), true = network
+
+	// Reward storage (network mode)
+	std::vector<RewardInfo> reward_history;
+	float cumulative_reward = 0.0f;
+	uint64_t reward_count = 0;
 #endif
 	bool active = false;
 	uint32_t current_session_id = 0;
@@ -418,6 +424,57 @@ bool TrackingExporter::getAgentActions(LocalPlayer* player)
 #endif
 }
 
+// Reward calculation helpers (from REWARD_DESIGN.md)
+namespace {
+
+// Calculate tracking accuracy reward based on distance to target
+// reward = k * (1.0 - dist / max_dist)
+// Where max_dist = diagonal of viewport (sqrt(256^2 + 256^2) ≈ 362 pixels)
+float CalculateTrackingAccuracyReward(float target_x, float target_y,
+                                       float viewport_center_x, float viewport_center_y,
+                                       float k_tracking = 0.1f)
+{
+	constexpr float MAX_DISTANCE = 362.0f;  // sqrt(256*256 + 256*256)
+
+	float dx = target_x - viewport_center_x;
+	float dy = target_y - viewport_center_y;
+	float distance = std::sqrt(dx * dx + dy * dy);
+
+	float normalized_distance = std::min(distance / MAX_DISTANCE, 1.0f);
+	float reward = k_tracking * (1.0f - normalized_distance);
+
+	return reward;
+}
+
+// Calculate survival reward (simple per-frame reward for being alive)
+// Encourages agent to stay alive and engaged
+float CalculateSurvivalReward(float k_survival = 0.01f)
+{
+	return k_survival;
+}
+
+// Calculate health change reward
+// Positive for healing, negative for damage
+float CalculateHealthChangeReward(float health_delta, float k_health = 0.1f)
+{
+	return k_health * health_delta;
+}
+
+// Calculate target acquisition reward (sparse reward for centering target)
+// Returns positive reward if target is within acquisition threshold
+bool CheckTargetAcquisition(float target_x, float target_y,
+                            float viewport_center_x, float viewport_center_y,
+                            float acquisition_threshold = 30.0f)
+{
+	float dx = target_x - viewport_center_x;
+	float dy = target_y - viewport_center_y;
+	float distance = std::sqrt(dx * dx + dy * dy);
+
+	return distance < acquisition_threshold;
+}
+
+} // anonymous namespace
+
 bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 {
 #ifdef ENABLE_TRACKING_EXPORT
@@ -572,16 +629,51 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 void TrackingExporter::registerRewardEvent(const std::string& event_type, float reward_value)
 {
 #ifdef ENABLE_TRACKING_EXPORT
-	if (!m_impl->active || !m_impl->bridge)
+	if (!m_impl->active)
 		return;
 
-	MinetestBridge::GameRewardEvent event;
-	event.event_type = event_type;
-	event.reward_value = reward_value;
-	event.target_id = 0; // No target for general events
-	event.timestamp_us = 0; // Will be set by bridge
+	if (m_impl->network_mode) {
+		// Network mode: Store reward locally and log
+		RewardInfo reward;
+		reward.immediate_reward = reward_value;
+		reward.cumulative_reward = m_impl->cumulative_reward + reward_value;
+		reward.source = event_type;
+		reward.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+		reward.type = RewardType::DENSE;  // Default to dense, can be overridden
+		reward.session_id = m_impl->current_session_id;
+		reward.is_terminal = false;
 
-	m_impl->bridge->RegisterRewardEvent(event);
+		// Update cumulative reward
+		m_impl->cumulative_reward += reward_value;
+		m_impl->reward_count++;
+
+		// Store in history (keep last 1000 rewards to avoid memory growth)
+		m_impl->reward_history.push_back(reward);
+		if (m_impl->reward_history.size() > 1000) {
+			m_impl->reward_history.erase(m_impl->reward_history.begin());
+		}
+
+		// Log periodically (every 100 rewards)
+		if (m_impl->reward_count % 100 == 1) {
+			infostream << "[Tracking] Rewards: count=" << m_impl->reward_count
+			           << ", cumulative=" << m_impl->cumulative_reward
+			           << ", latest_source=" << event_type
+			           << ", latest_value=" << reward_value << std::endl;
+		}
+	} else {
+		// Local mode: Use MinetestBridge
+		if (!m_impl->bridge)
+			return;
+
+		MinetestBridge::GameRewardEvent event;
+		event.event_type = event_type;
+		event.reward_value = reward_value;
+		event.target_id = 0; // No target for general events
+		event.timestamp_us = 0; // Will be set by bridge
+
+		m_impl->bridge->RegisterRewardEvent(event);
+	}
 #endif
 }
 
