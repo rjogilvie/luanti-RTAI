@@ -4237,6 +4237,31 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 	// Export framebuffer for RL pipeline (after rendering is complete)
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
 		m_tracking_exporter->exportFramebuffer(this->driver);
+
+		// Register survival reward (dense, every frame)
+		constexpr float k_survival = 0.01f;
+		m_tracking_exporter->registerRewardEvent("survival", k_survival);
+
+		// Register health change reward (sparse, only on HP delta)
+		static u16 previous_hp = 0;
+		LocalPlayer *player = client->getEnv().getLocalPlayer();
+		if (player) {
+			u16 current_hp = player->hp;
+			if (current_hp != previous_hp) {
+				// Calculate health delta as normalized change (-1.0 to +1.0)
+				// Assuming max HP is 20 (standard Minetest/Luanti)
+				constexpr float max_hp = 20.0f;
+				constexpr float k_health = 0.1f;
+				float hp_delta = static_cast<float>(current_hp) - static_cast<float>(previous_hp);
+				float normalized_delta = hp_delta / max_hp;
+				float health_reward = k_health * normalized_delta;
+				m_tracking_exporter->registerRewardEvent("health_change", health_reward);
+				previous_hp = current_hp;
+			} else if (previous_hp == 0) {
+				// Initialize on first frame
+				previous_hp = current_hp;
+			}
+		}
 	}
 #endif
 

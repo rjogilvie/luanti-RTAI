@@ -52,6 +52,7 @@ struct TrackingExporter::Impl {
 		uint64_t start_time_us = 0;
 		float initial_x = 0.0f;
 		float initial_y = 0.0f;
+		bool was_acquired = false;  // Track if target was previously centered (for acquisition rewards)
 	};
 	std::unordered_map<uint64_t, TargetState> target_states;
 
@@ -936,6 +937,30 @@ void TrackingExporter::renderTargets(video::IVideoDriver* driver)
 
 			default:
 				break;
+		}
+
+		// Calculate and register rewards for this target
+		constexpr float VIEWPORT_CENTER_X = 128.0f;
+		constexpr float VIEWPORT_CENTER_Y = 128.0f;
+
+		// Tracking accuracy reward (dense, every frame)
+		float tracking_reward = CalculateTrackingAccuracyReward(
+			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y);
+		registerRewardEvent("tracking_accuracy", tracking_reward);
+
+		// Target acquisition reward (sparse, only when first centered)
+		bool is_acquired = CheckTargetAcquisition(
+			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y);
+
+		// Get mutable reference to state for updating acquisition flag
+		auto& mutable_state = m_impl->target_states[target_id];
+		if (is_acquired && !mutable_state.was_acquired) {
+			// Target just became acquired - give sparse reward
+			registerRewardEvent("target_acquisition", 1.0f);
+			mutable_state.was_acquired = true;
+		} else if (!is_acquired && mutable_state.was_acquired) {
+			// Target left acquisition zone - reset flag
+			mutable_state.was_acquired = false;
 		}
 	}
 #endif
