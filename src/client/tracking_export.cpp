@@ -24,6 +24,7 @@
 #include "action_distributor.h"
 #include "target_control.h"
 #include "reward_signal.h"
+#include "reward_protocol.h"
 #endif
 
 namespace tracking {
@@ -43,6 +44,12 @@ struct TrackingExporter::Impl {
 	// Target control (UDP receiver for target commands)
 	std::unique_ptr<network::UDPSocket> target_control_socket;
 	uint16_t target_control_port = 8002;
+
+	// Reward sender (TCP to NetworkServer)
+	std::unique_ptr<network::TCPSocket> reward_socket;
+	std::string reward_server_host = "127.0.0.1";
+	uint16_t reward_server_port = 8003;
+	bool reward_socket_connected = false;
 
 	// Active targets (target_id -> TargetPacket)
 	std::unordered_map<uint64_t, network::TargetPacket> active_targets;
@@ -188,6 +195,25 @@ bool TrackingExporter::initializeNetwork(int port, const std::string& bind_addr,
 		              << m_impl->target_control_port << std::endl;
 		warningstream << "[Tracking]   Target control will be unavailable" << std::endl;
 		m_impl->target_control_socket.reset();
+	}
+
+	// Initialize reward sender (TCP to NetworkServer)
+	m_impl->reward_socket = std::make_unique<network::TCPSocket>();
+	network::Address reward_server_addr;
+	reward_server_addr.host = m_impl->reward_server_host;
+	reward_server_addr.port = m_impl->reward_server_port;
+
+	if (m_impl->reward_socket->Connect(reward_server_addr)) {
+		m_impl->reward_socket_connected = true;
+		infostream << "[Tracking] ✓ Reward sender connected to TCP "
+		           << m_impl->reward_server_host << ":" << m_impl->reward_server_port << std::endl;
+		infostream << "[Tracking]   Ready to send reward events to NetworkServer" << std::endl;
+	} else {
+		warningstream << "[Tracking] ✗ Failed to connect to reward server at "
+		              << m_impl->reward_server_host << ":" << m_impl->reward_server_port << std::endl;
+		warningstream << "[Tracking]   Rewards will be logged locally only" << std::endl;
+		m_impl->reward_socket.reset();
+		m_impl->reward_socket_connected = false;
 	}
 
 	return true;
@@ -634,7 +660,7 @@ void TrackingExporter::registerRewardEvent(const std::string& event_type, float 
 		return;
 
 	if (m_impl->network_mode) {
-		// Network mode: Store reward locally and log
+		// Network mode: Build reward info and send via TCP
 		RewardInfo reward;
 		reward.immediate_reward = reward_value;
 		reward.cumulative_reward = m_impl->cumulative_reward + reward_value;
@@ -655,12 +681,46 @@ void TrackingExporter::registerRewardEvent(const std::string& event_type, float 
 			m_impl->reward_history.erase(m_impl->reward_history.begin());
 		}
 
+		// Send via TCP if connected
+		if (m_impl->reward_socket_connected && m_impl->reward_socket) {
+			// Serialize reward using RewardSerializer
+			std::vector<uint8_t> packet = network::RewardSerializer::Serialize(reward);
+
+			// Send packet
+			ssize_t bytes_sent = m_impl->reward_socket->Send(packet.data(), packet.size());
+
+			if (bytes_sent <= 0) {
+				// Connection failed - try to reconnect on next reward
+				warningstream << "[Tracking] Reward socket disconnected, will attempt reconnect" << std::endl;
+				m_impl->reward_socket_connected = false;
+				m_impl->reward_socket.reset();
+			}
+		} else if (!m_impl->reward_socket_connected && !m_impl->reward_socket) {
+			// Try to reconnect (but not too frequently - only every 100 rewards)
+			if (m_impl->reward_count % 100 == 1) {
+				m_impl->reward_socket = std::make_unique<network::TCPSocket>();
+				network::Address reward_server_addr;
+				reward_server_addr.host = m_impl->reward_server_host;
+				reward_server_addr.port = m_impl->reward_server_port;
+
+				if (m_impl->reward_socket->Connect(reward_server_addr)) {
+					m_impl->reward_socket_connected = true;
+					infostream << "[Tracking] Reconnected to reward server at "
+					           << m_impl->reward_server_host << ":" << m_impl->reward_server_port << std::endl;
+				} else {
+					m_impl->reward_socket.reset();
+					m_impl->reward_socket_connected = false;
+				}
+			}
+		}
+
 		// Log periodically (every 100 rewards)
 		if (m_impl->reward_count % 100 == 1) {
 			infostream << "[Tracking] Rewards: count=" << m_impl->reward_count
 			           << ", cumulative=" << m_impl->cumulative_reward
 			           << ", latest_source=" << event_type
-			           << ", latest_value=" << reward_value << std::endl;
+			           << ", latest_value=" << reward_value
+			           << ", tcp_connected=" << (m_impl->reward_socket_connected ? "yes" : "no") << std::endl;
 		}
 	} else {
 		// Local mode: Use MinetestBridge
