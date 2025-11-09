@@ -974,17 +974,16 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 		bool initialized = false;
 
 		if (tracking_mode == "network") {
-			// Network mode: distributed training
-			int port = g_settings->getU16("tracking_port");
-			std::string bind_addr = g_settings->get("tracking_bind_addr");
-			std::string broadcast_addr = g_settings->get("tracking_broadcast_addr");
+			// Network mode: P2P via NetworkServer
+			std::string server_host = g_settings->get("tracking_server_host");
+			uint16_t tcp_port = g_settings->getU16("tracking_tcp_port");
+			std::string client_id = g_settings->get("tracking_client_id");
 
-			infostream << "[Tracking] Initializing in NETWORK mode..." << std::endl;
-			infostream << "[Tracking]   Port: " << port << std::endl;
-			infostream << "[Tracking]   Bind address: " << bind_addr << std::endl;
-			infostream << "[Tracking]   Broadcast address: " << broadcast_addr << std::endl;
+			infostream << "[Tracking] Initializing in NETWORK mode (P2P)..." << std::endl;
+			infostream << "[Tracking]   Server: " << server_host << ":" << tcp_port << std::endl;
+			infostream << "[Tracking]   Client ID: " << client_id << std::endl;
 
-			initialized = m_tracking_exporter->initializeNetwork(port, bind_addr, broadcast_addr);
+			initialized = m_tracking_exporter->initializeNetwork(server_host, tcp_port, client_id);
 		} else {
 			// Local mode: shared memory (default)
 			std::string shm_name = g_settings->get("tracking_shm_name");

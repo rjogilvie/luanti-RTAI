@@ -17,14 +17,11 @@
 // Include tracking pipeline headers OUTSIDE namespace
 #ifdef ENABLE_TRACKING_EXPORT
 #include "minetest_bridge.h"
-#include "frame_distributor.h"
-#include "session_coordinator.h"
+#include "frame_producer.h"
 #include "frame_formats.h"
 #include "network_transport.h"
-#include "action_distributor.h"
 #include "target_control.h"
 #include "reward_signal.h"
-#include "reward_protocol.h"
 #endif
 
 namespace tracking {
@@ -34,22 +31,12 @@ struct TrackingExporter::Impl {
 	// Local mode (shared memory)
 	std::unique_ptr<MinetestBridge> bridge;
 
-	// Network mode (UDP frame broadcasting)
-	std::unique_ptr<network::FrameDistributor> frame_distributor;
+	// Network mode (FrameProducer - bidirectional peer-to-peer)
+	std::unique_ptr<network::FrameProducer> frame_producer;
 
-	// Camera control (UDP receiver for agent control)
-	std::unique_ptr<network::UDPSocket> camera_control_socket;
-	uint16_t camera_control_port = 8000;
-
-	// Target control (UDP receiver for target commands)
+	// Target control (UDP receiver for target commands - separate from FrameProducer)
 	std::unique_ptr<network::UDPSocket> target_control_socket;
 	uint16_t target_control_port = 8002;
-
-	// Reward sender (TCP to NetworkServer)
-	std::unique_ptr<network::TCPSocket> reward_socket;
-	std::string reward_server_host = "127.0.0.1";
-	uint16_t reward_server_port = 8003;
-	bool reward_socket_connected = false;
 
 	// Active targets (target_id -> TargetPacket)
 	std::unordered_map<uint64_t, network::TargetPacket> active_targets;
@@ -120,100 +107,63 @@ bool TrackingExporter::initializeLocal(const std::string& shared_memory_name)
 #endif
 }
 
-bool TrackingExporter::initializeNetwork(int port, const std::string& bind_addr,
-                                          const std::string& broadcast_addr)
+bool TrackingExporter::initializeNetwork(const std::string& server_host,
+                                          uint16_t tcp_port,
+                                          const std::string& client_id)
 {
 #ifdef ENABLE_TRACKING_EXPORT
-	infostream << "[Tracking] Initializing tracking export system (NETWORK MODE)..." << std::endl;
-	infostream << "[Tracking]   UDP Port: " << port << std::endl;
-	infostream << "[Tracking]   Bind address: " << bind_addr << std::endl;
-	infostream << "[Tracking]   Broadcast address: " << broadcast_addr << std::endl;
+	infostream << "[Tracking] Initializing tracking export (NETWORK MODE)" << std::endl;
+	infostream << "[Tracking]   Server: " << server_host << ":" << tcp_port << std::endl;
+	infostream << "[Tracking]   Client ID: " << client_id << std::endl;
 
-	// Create frame distributor (broadcasts frames via UDP)
-	m_impl->frame_distributor = std::make_unique<network::FrameDistributor>();
+	// Configure FrameProducer
+	network::ProducerConfig config;
+	config.server_host = server_host;
+	config.tcp_port = tcp_port;
+	config.client_id = client_id;
+	config.enable_compression = true;
+	config.compression_type = network::CompressionType::ZSTD;
+	config.heartbeat_interval_ms = 1000;
+	config.enable_health_monitoring = true;
+	config.keepalive_interval_ms = 5000;
+	config.udp_frames_port = 0;   // Let OS choose
+	config.udp_actions_port = 0;  // Let OS choose
 
-	// Bind to any available port (sender doesn't need specific port)
-	network::Address sender_addr;
-	sender_addr.port = 0;  // 0 = let OS choose available port
-	sender_addr.host = bind_addr;
+	// Create FrameProducer
+	m_impl->frame_producer = std::make_unique<network::FrameProducer>(config);
 
-	if (!m_impl->frame_distributor->Initialize(sender_addr)) {
-		errorstream << "[Tracking] Failed to initialize frame distributor" << std::endl;
+	// Connect to NetworkServer
+	if (!m_impl->frame_producer->Connect()) {
+		errorstream << "[Tracking] Failed to connect to NetworkServer at "
+		            << server_host << ":" << tcp_port << std::endl;
+		m_impl->frame_producer.reset();
 		return false;
 	}
 
-	// Enable broadcast mode (send TO destination port)
-	network::Address bcast_addr;
-	bcast_addr.port = port;  // Receivers listen on this port
-	bcast_addr.host = broadcast_addr;  // Configurable broadcast address
-	m_impl->frame_distributor->SetBroadcastMode(true, bcast_addr);
+	// Get session ID
+	m_impl->current_session_id = m_impl->frame_producer->GetSessionID();
 
-	// Enable compression for network mode (reduces bandwidth)
-	m_impl->frame_distributor->SetCompressionEnabled(true);
-	m_impl->frame_distributor->SetCompressionType(network::CompressionType::ZSTD);
+	infostream << "[Tracking] ✓ Connected to NetworkServer" << std::endl;
+	infostream << "[Tracking]   Session ID: " << m_impl->current_session_id << std::endl;
+	infostream << "[Tracking]   Compression: ZSTD enabled" << std::endl;
 
 	m_impl->network_mode = true;
 	m_impl->active = true;
 
-	infostream << "[Tracking] ✓ Tracking export initialized (NETWORK MODE)" << std::endl;
-	infostream << "[Tracking]   Broadcasting TO: " << broadcast_addr << ":" << port << std::endl;
-	infostream << "[Tracking]   Compression: ZSTD" << std::endl;
-	infostream << "[Tracking]   Ready to broadcast frames to all listeners" << std::endl;
-	infostream << "[Tracking]   (Receivers should bind to port " << port << ")" << std::endl;
-
-	// Initialize camera control receiver (UDP)
-	m_impl->camera_control_socket = std::make_unique<network::UDPSocket>();
-	network::Address control_bind_addr;
-	control_bind_addr.host = bind_addr;
-	control_bind_addr.port = m_impl->camera_control_port;
-
-	if (m_impl->camera_control_socket->Bind(control_bind_addr)) {
-		m_impl->camera_control_socket->SetNonBlocking(true);
-		infostream << "[Tracking] ✓ Camera control listening on UDP port "
-		           << m_impl->camera_control_port << std::endl;
-		infostream << "[Tracking]   Ready to receive camera control commands" << std::endl;
-	} else {
-		warningstream << "[Tracking] ✗ Failed to bind camera control port "
-		              << m_impl->camera_control_port << std::endl;
-		warningstream << "[Tracking]   Camera control will be unavailable" << std::endl;
-		m_impl->camera_control_socket.reset();
-	}
-
-	// Initialize target control receiver (UDP)
+	// Initialize target control (unchanged)
 	m_impl->target_control_socket = std::make_unique<network::UDPSocket>();
 	network::Address target_bind_addr;
-	target_bind_addr.host = bind_addr;
+	target_bind_addr.host = "0.0.0.0";
 	target_bind_addr.port = m_impl->target_control_port;
 
 	if (m_impl->target_control_socket->Bind(target_bind_addr)) {
 		m_impl->target_control_socket->SetNonBlocking(true);
 		infostream << "[Tracking] ✓ Target control listening on UDP port "
 		           << m_impl->target_control_port << std::endl;
-		infostream << "[Tracking]   Ready to receive target spawn/control commands" << std::endl;
 	} else {
 		warningstream << "[Tracking] ✗ Failed to bind target control port "
 		              << m_impl->target_control_port << std::endl;
-		warningstream << "[Tracking]   Target control will be unavailable" << std::endl;
 		m_impl->target_control_socket.reset();
-	}
-
-	// Initialize reward sender (TCP to NetworkServer)
-	m_impl->reward_socket = std::make_unique<network::TCPSocket>();
-	network::Address reward_server_addr;
-	reward_server_addr.host = m_impl->reward_server_host;
-	reward_server_addr.port = m_impl->reward_server_port;
-
-	if (m_impl->reward_socket->Connect(reward_server_addr)) {
-		m_impl->reward_socket_connected = true;
-		infostream << "[Tracking] ✓ Reward sender connected to TCP "
-		           << m_impl->reward_server_host << ":" << m_impl->reward_server_port << std::endl;
-		infostream << "[Tracking]   Ready to send reward events to NetworkServer" << std::endl;
-	} else {
-		warningstream << "[Tracking] ✗ Failed to connect to reward server at "
-		              << m_impl->reward_server_host << ":" << m_impl->reward_server_port << std::endl;
-		warningstream << "[Tracking]   Rewards will be logged locally only" << std::endl;
-		m_impl->reward_socket.reset();
-		m_impl->reward_socket_connected = false;
 	}
 
 	return true;
@@ -236,17 +186,17 @@ void TrackingExporter::shutdown()
 	infostream << "[Tracking]   Total frames failed: " << m_frames_failed << std::endl;
 
 	// Shutdown network components
-	if (m_impl->network_mode && m_impl->frame_distributor) {
-		infostream << "[Tracking] Stopping frame distributor..." << std::endl;
-		// No explicit shutdown needed for FrameDistributor - just reset
-		m_impl->frame_distributor.reset();
+	if (m_impl->network_mode && m_impl->frame_producer) {
+		infostream << "[Tracking] Disconnecting FrameProducer..." << std::endl;
+		m_impl->frame_producer->Disconnect();
+		m_impl->frame_producer.reset();
 	}
 
-	// Shutdown camera control socket
-	if (m_impl->camera_control_socket) {
-		infostream << "[Tracking] Closing camera control socket..." << std::endl;
-		m_impl->camera_control_socket->Close();
-		m_impl->camera_control_socket.reset();
+	// Shutdown target control socket (still separate from FrameProducer)
+	if (m_impl->target_control_socket) {
+		infostream << "[Tracking] Closing target control socket..." << std::endl;
+		m_impl->target_control_socket->Close();
+		m_impl->target_control_socket.reset();
 	}
 
 	// Shutdown local mode components
@@ -289,7 +239,7 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		return;
 
 	// Check that we have the appropriate backend initialized
-	if (m_impl->network_mode && !m_impl->frame_distributor)
+	if (m_impl->network_mode && !m_impl->frame_producer)
 		return;
 	if (!m_impl->network_mode && !m_impl->bridge)
 		return;
@@ -386,11 +336,11 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 			}
 		}
 
-		// Broadcast to all clients
-		if (!m_impl->frame_distributor->BroadcastFrame(frame)) {
+		// Send frame via P2P connection to paired receiver
+		if (!m_impl->frame_producer->SendFrame(frame)) {
 			m_frames_failed++;
 			if (m_frames_failed % 100 == 1) {
-				errorstream << "[Tracking] Failed to broadcast frame via network" << std::endl;
+				errorstream << "[Tracking] Failed to send frame via network" << std::endl;
 			}
 			return;
 		}
@@ -505,57 +455,30 @@ bool CheckTargetAcquisition(float target_x, float target_y,
 bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 {
 #ifdef ENABLE_TRACKING_EXPORT
-	if (!m_impl->active || !m_impl->camera_control_socket || !player)
+	if (!m_impl->active || !player)
 		return false;
 
-	// Receive ActionPacket from UDP socket
-	uint8_t buffer[512];  // Large enough for ActionPacket
-	network::Address sender;
-	int received = m_impl->camera_control_socket->ReceiveFrom(buffer, sizeof(buffer), sender);
-
-	if (received < static_cast<int>(network::ActionPacket::PACKET_SIZE)) {
-		return false;  // No packet or incomplete packet
-	}
-
-	// Deserialize ActionPacket
-	auto packet_opt = network::ActionPacket::Deserialize(buffer, received);
-	if (!packet_opt) {
-		m_action_stats.actions_failed++;
+	// Network mode: poll action from FrameProducer
+	// Local mode: not implemented yet (would use MinetestBridge)
+	if (!m_impl->network_mode || !m_impl->frame_producer)
 		return false;
+
+	// Poll for action command from FrameProducer
+	auto cmd_opt = m_impl->frame_producer->PollAction();
+	if (!cmd_opt) {
+		return false;  // No action available
 	}
 
-	const network::ActionPacket& packet = *packet_opt;
-	const GazeCommand& cmd = packet.command;
+	const GazeCommand& cmd = *cmd_opt;
 
 	// Update statistics
 	m_action_stats.actions_received++;
 
-	// Calculate latency (send_time → receive_time)
+	// Note: Latency tracking would require timestamp in GazeCommand
+	// For now, just track receive time
 	auto now = std::chrono::high_resolution_clock::now();
 	uint64_t receive_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
 		now.time_since_epoch()).count();
-
-	double latency_us = static_cast<double>(receive_time_us - packet.send_time_us);
-
-	// Update latency statistics
-	if (m_action_stats.actions_applied == 0) {
-		// First action
-		m_action_stats.average_latency_us = latency_us;
-		m_action_stats.min_latency_us = latency_us;
-		m_action_stats.max_latency_us = latency_us;
-	} else {
-		// Exponential moving average
-		m_action_stats.average_latency_us = 0.9 * m_action_stats.average_latency_us + 0.1 * latency_us;
-
-		// Update min/max
-		if (latency_us < m_action_stats.min_latency_us) {
-			m_action_stats.min_latency_us = latency_us;
-		}
-		if (latency_us > m_action_stats.max_latency_us) {
-			m_action_stats.max_latency_us = latency_us;
-		}
-	}
-
 	m_action_stats.last_action_time_us = receive_time_us;
 
 	// Get current camera state
@@ -681,46 +604,16 @@ void TrackingExporter::registerRewardEvent(const std::string& event_type, float 
 			m_impl->reward_history.erase(m_impl->reward_history.begin());
 		}
 
-		// Send via TCP if connected
-		if (m_impl->reward_socket_connected && m_impl->reward_socket) {
-			// Serialize reward using RewardSerializer
-			std::vector<uint8_t> packet = network::RewardSerializer::Serialize(reward);
-
-			// Send packet
-			ssize_t bytes_sent = m_impl->reward_socket->Send(packet.data(), packet.size());
-
-			if (bytes_sent <= 0) {
-				// Connection failed - try to reconnect on next reward
-				warningstream << "[Tracking] Reward socket disconnected, will attempt reconnect" << std::endl;
-				m_impl->reward_socket_connected = false;
-				m_impl->reward_socket.reset();
-			}
-		} else if (!m_impl->reward_socket_connected && !m_impl->reward_socket) {
-			// Try to reconnect (but not too frequently - only every 100 rewards)
-			if (m_impl->reward_count % 100 == 1) {
-				m_impl->reward_socket = std::make_unique<network::TCPSocket>();
-				network::Address reward_server_addr;
-				reward_server_addr.host = m_impl->reward_server_host;
-				reward_server_addr.port = m_impl->reward_server_port;
-
-				if (m_impl->reward_socket->Connect(reward_server_addr)) {
-					m_impl->reward_socket_connected = true;
-					infostream << "[Tracking] Reconnected to reward server at "
-					           << m_impl->reward_server_host << ":" << m_impl->reward_server_port << std::endl;
-				} else {
-					m_impl->reward_socket.reset();
-					m_impl->reward_socket_connected = false;
-				}
-			}
-		}
+		// TODO: Network reward sending would go here
+		// For now, rewards are only logged locally
+		// Could integrate with FrameProducer session or separate TCP connection
 
 		// Log periodically (every 100 rewards)
 		if (m_impl->reward_count % 100 == 1) {
 			infostream << "[Tracking] Rewards: count=" << m_impl->reward_count
 			           << ", cumulative=" << m_impl->cumulative_reward
 			           << ", latest_source=" << event_type
-			           << ", latest_value=" << reward_value
-			           << ", tcp_connected=" << (m_impl->reward_socket_connected ? "yes" : "no") << std::endl;
+			           << ", latest_value=" << reward_value << std::endl;
 		}
 	} else {
 		// Local mode: Use MinetestBridge
@@ -746,6 +639,28 @@ TrackingExporter::ActionStats TrackingExporter::getActionStats() const
 void TrackingExporter::resetActionStats()
 {
 	m_action_stats.Reset();
+}
+
+network::ProducerStats TrackingExporter::getProducerStats() const
+{
+#ifdef ENABLE_TRACKING_EXPORT
+	if (m_impl->network_mode && m_impl->frame_producer) {
+		return m_impl->frame_producer->GetStats();
+	}
+#endif
+	// Return empty stats if not in network mode
+	return network::ProducerStats{};
+}
+
+network::ConnectionHealthStats TrackingExporter::getConnectionHealth() const
+{
+#ifdef ENABLE_TRACKING_EXPORT
+	if (m_impl->network_mode && m_impl->frame_producer) {
+		return m_impl->frame_producer->GetConnectionHealth();
+	}
+#endif
+	// Return empty health stats if not in network mode
+	return network::ConnectionHealthStats{};
 }
 
 int TrackingExporter::processTargetCommands()

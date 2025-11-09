@@ -131,10 +131,12 @@ void set_default_settings()
 	// Tracking Export for RL Pipeline
 	settings->setDefault("enable_tracking_export", "false");
 	settings->setDefault("tracking_mode", "local");  // "local" or "network"
+	// Local mode settings
 	settings->setDefault("tracking_shm_name", "tracking_viewport");
-	settings->setDefault("tracking_port", "8000");
-	settings->setDefault("tracking_bind_addr", "0.0.0.0");
-	settings->setDefault("tracking_broadcast_addr", "255.255.255.255");  // Use "127.0.0.1" for localhost testing
+	// Network mode settings (P2P via NetworkServer)
+	settings->setDefault("tracking_server_host", "127.0.0.1");
+	settings->setDefault("tracking_tcp_port", "7001");
+	settings->setDefault("tracking_client_id", "luanti_producer");
 
 	// Keymap
 #if USE_SDL2

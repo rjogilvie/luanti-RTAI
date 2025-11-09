@@ -14,6 +14,14 @@ namespace video {
 class LocalPlayer;
 class Client;
 
+// Forward declarations for network types
+namespace tracking {
+namespace network {
+	struct ProducerStats;
+	struct ConnectionHealthStats;
+}
+}
+
 namespace tracking {
 
 /**
@@ -45,14 +53,16 @@ public:
 
 	/**
 	 * Initialize the tracking export system in NETWORK mode
-	 * Uses UDP for frame distribution and TCP for session management
+	 * Uses FrameProducer for bidirectional P2P communication via NetworkServer
 	 *
-	 * @param port Port to bind for network services (default: 8000)
-	 * @param bind_addr Address to bind to (default: "0.0.0.0" - all interfaces)
+	 * @param server_host NetworkServer host address (default: "127.0.0.1")
+	 * @param tcp_port NetworkServer TCP port for session coordination (default: 7001)
+	 * @param client_id Client identifier for this Luanti instance (default: "luanti_producer")
 	 * @return true if initialization succeeded
 	 */
-	bool initializeNetwork(int port = 8000, const std::string& bind_addr = "0.0.0.0",
-	                       const std::string& broadcast_addr = "255.255.255.255");
+	bool initializeNetwork(const std::string& server_host = "127.0.0.1",
+	                       uint16_t tcp_port = 7001,
+	                       const std::string& client_id = "luanti_producer");
 
 	/**
 	 * Legacy initialize method - defaults to local mode
@@ -158,6 +168,20 @@ public:
 	 * Reset action feedback statistics
 	 */
 	void resetActionStats();
+
+	/**
+	 * Get FrameProducer statistics (network mode only)
+	 * Returns frame transmission stats, action reception stats, etc.
+	 * @return Producer statistics (empty if not in network mode)
+	 */
+	network::ProducerStats getProducerStats() const;
+
+	/**
+	 * Get connection health status (network mode only)
+	 * Returns RTT, packet loss, connection state, etc.
+	 * @return Connection health metrics (empty if not in network mode)
+	 */
+	network::ConnectionHealthStats getConnectionHealth() const;
 
 	/**
 	 * Process target control commands from UDP
