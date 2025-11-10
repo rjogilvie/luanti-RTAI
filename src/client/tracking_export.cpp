@@ -299,8 +299,20 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		}
 	}
 
+	// DEBUG: Log exportFramebuffer invocation
+	if (m_frames_exported % 60 == 0) {  // Log every 60 frames (~1 second at 60 FPS)
+		infostream << "[TrackingExporter] exportFramebuffer called (frame " << m_frames_exported
+		           << ", mode=" << (m_impl->network_mode ? "NETWORK" : "LOCAL") << ")" << std::endl;
+	}
+
 	// Send frame data based on mode
 	if (m_impl->network_mode) {
+		// DEBUG: Log network mode frame export attempt
+		if (m_frames_exported < 5 || m_frames_exported % 60 == 0) {
+			infostream << "[TrackingExporter] Attempting to send frame " << m_frames_exported
+			           << " via network (session_id=" << m_impl->current_session_id << ")" << std::endl;
+		}
+
 		// Network mode: broadcast via UDP to all connected clients
 		// Convert to FrameFixed256 format
 		FrameFixed256 frame = {};  // Zero-initialize
@@ -337,12 +349,18 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		}
 
 		// Send frame via P2P connection to paired receiver
-		if (!m_impl->frame_producer->SendFrame(frame)) {
+		bool send_result = m_impl->frame_producer->SendFrame(frame);
+
+		// DEBUG: Log SendFrame result
+		if (!send_result) {
 			m_frames_failed++;
-			if (m_frames_failed % 100 == 1) {
-				errorstream << "[Tracking] Failed to send frame via network" << std::endl;
+			if (m_frames_failed <= 10 || m_frames_failed % 60 == 1) {
+				errorstream << "[TrackingExporter] SendFrame FAILED (frame " << m_frames_exported
+				            << ", total_failures=" << m_frames_failed << ")" << std::endl;
 			}
 			return;
+		} else if (m_frames_exported < 5 || m_frames_exported % 60 == 0) {
+			infostream << "[TrackingExporter] SendFrame SUCCESS (frame " << m_frames_exported << ")" << std::endl;
 		}
 	} else {
 		// Local mode: write to shared memory via MinetestBridge
