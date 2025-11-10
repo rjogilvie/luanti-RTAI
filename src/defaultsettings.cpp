@@ -137,6 +137,8 @@ void set_default_settings()
 	settings->setDefault("tracking_server_host", "127.0.0.1");
 	settings->setDefault("tracking_tcp_port", "7001");
 	settings->setDefault("tracking_client_id", "luanti_producer");
+	// Rendering settings for headless/automated environments
+	settings->setDefault("force_rendering", "false");
 
 	// Keymap
 #if USE_SDL2

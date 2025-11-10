@@ -4071,7 +4071,7 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	/*
 		==================== Drawing begins ====================
 	*/
-	if (device->isWindowVisible())
+	if (device->isWindowVisible() || g_settings->getBool("force_rendering"))
 		drawScene(graph, stats);
 	/*
 		==================== End scene ====================
