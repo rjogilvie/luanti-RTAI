@@ -2607,7 +2607,9 @@ void Game::updatePlayerControl(const CameraOrientation &cam)
 void Game::updatePauseState()
 {
 	bool was_paused = this->m_is_paused;
-	this->m_is_paused = this->simple_singleplayer_mode && g_menumgr.pausesGame();
+	// Allow disabling autopause for automated/headless operation
+	bool allow_autopause = !g_settings->getBool("disable_singleplayer_autopause");
+	this->m_is_paused = this->simple_singleplayer_mode && allow_autopause && g_menumgr.pausesGame();
 
 	if (!was_paused && this->m_is_paused) {
 		this->pauseAnimation();
