@@ -150,8 +150,11 @@ bool ClientLauncher::run(GameStartData &start_data, const Settings &cmd_args)
 	bool retval         = true;
 	volatile auto *kill = porting::signal_handler_killstatus();
 
+	std::cerr << "[DEBUG] About to enter main menu-game loop, skip_main_menu=" << skip_main_menu << std::endl;
+
 	while (m_rendering_engine->run() && !*kill &&
 		!g_gamecallback->shutdown_requested) {
+		std::cerr << "[DEBUG] Inside main loop iteration" << std::endl;
 		// Set the window caption
 		auto driver_name = m_rendering_engine->getVideoDriver()->getName();
 		std::string caption = std::string(PROJECT_NAME_C) +
@@ -178,6 +181,8 @@ bool ClientLauncher::run(GameStartData &start_data, const Settings &cmd_args)
 			bool should_run_game = launch_game(error_message, reconnect_requested,
 				start_data, cmd_args);
 
+			std::cerr << "[DEBUG] launch_game returned: " << (should_run_game ? "true" : "false") << std::endl;
+
 			// Reset the reconnect_requested flag
 			reconnect_requested = false;
 
@@ -192,10 +197,35 @@ bool ClientLauncher::run(GameStartData &start_data, const Settings &cmd_args)
 				continue;
 			}
 
-			// Break out of menu-game loop to shut down cleanly
-			if (!m_rendering_engine->run() || *kill)
-				break;
+			// When skip_main_menu is set and game should run, call the_game immediately
+			// Skip the rendering engine check that causes premature exit in headless mode
+			if (skip_main_menu && should_run_game) {
+				std::cerr << "[DEBUG] skip_main_menu mode: calling the_game() directly..." << std::endl;
+				the_game(
+					kill,
+					input,
+					m_rendering_engine,
+					start_data,
+					error_message,
+					chat_backend,
+					&reconnect_requested
+				);
+				std::cerr << "[DEBUG] the_game() returned, exiting loop" << std::endl;
+				break; // Exit after the_game completes
+			}
 
+			// Break out of menu-game loop to shut down cleanly
+			infostream << "[DEBUG] Checking rendering engine before the_game..." << std::endl;
+			bool rendering_runs = m_rendering_engine->run();
+			bool is_killed = *kill;
+			infostream << "[DEBUG] rendering_engine->run()=" << (rendering_runs ? "true" : "false")
+			           << ", kill=" << (is_killed ? "true" : "false") << std::endl;
+			if (!rendering_runs || is_killed) {
+				infostream << "[DEBUG] Breaking before the_game!" << std::endl;
+				break;
+			}
+
+			infostream << "[DEBUG] About to call the_game()..." << std::endl;
 			the_game(
 				kill,
 				input,
@@ -393,6 +423,7 @@ bool ClientLauncher::launch_game(std::string &error_message,
 		bool reconnect_requested, GameStartData &start_data,
 		const Settings &cmd_args)
 {
+	std::cerr << "[DEBUG] launch_game() called, skip_main_menu=" << skip_main_menu << std::endl;
 	// Prepare and check the start data to launch a game
 	std::string error_message_lua = error_message;
 	error_message.clear();
@@ -531,9 +562,11 @@ bool ClientLauncher::launch_game(std::string &error_message,
 			return false;
 		}
 
+		std::cerr << "[DEBUG] launch_game() returning true (local server path)" << std::endl;
 		return true;
 	}
 
+	std::cerr << "[DEBUG] launch_game() returning true (remote server path)" << std::endl;
 	start_data.world_path = start_data.world_spec.path;
 	return true;
 }

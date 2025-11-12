@@ -245,25 +245,34 @@ int main(int argc, char *argv[])
 #endif
 	}
 
+	std::cerr << "[DEBUG MAIN] Initializing game parameters..." << std::endl;
 	GameStartData game_params;
 #if !CHECK_CLIENT_BUILD()
+	std::cerr << "[DEBUG MAIN] Server-only build detected (CHECK_CLIENT_BUILD=false)" << std::endl;
 	porting::attachOrCreateConsole();
 	game_params.is_dedicated_server = true;
 #else
+	std::cerr << "[DEBUG MAIN] Client build detected (CHECK_CLIENT_BUILD=true)" << std::endl;
 	const bool isServer = cmd_args.getFlag("server");
+	std::cerr << "[DEBUG MAIN] --server flag = " << (isServer ? "true" : "false") << std::endl;
 	if (isServer)
 		porting::attachOrCreateConsole();
 	game_params.is_dedicated_server = isServer;
 #endif
+
+	std::cerr << "[DEBUG MAIN] is_dedicated_server = " << (game_params.is_dedicated_server ? "true" : "false") << std::endl;
 
 	if (!game_configure(&game_params, cmd_args))
 		return 1;
 
 	sanity_check(!game_params.world_path.empty());
 
-	if (game_params.is_dedicated_server)
+	if (game_params.is_dedicated_server) {
+		std::cerr << "[DEBUG MAIN] Entering dedicated server mode..." << std::endl;
 		return run_dedicated_server(game_params, cmd_args) ? 0 : 1;
+	}
 
+	std::cerr << "[DEBUG MAIN] About to start ClientLauncher..." << std::endl;
 #if CHECK_CLIENT_BUILD()
 	retval = ClientLauncher().run(game_params, cmd_args) ? 0 : 1;
 #else

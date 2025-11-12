@@ -1013,6 +1013,8 @@ void Game::run()
 {
 	ZoneScoped;
 
+	infostream << "[DEBUG] Game::run() started" << std::endl;
+
 	ProfilerGraph graph;
 	RunStats stats = {};
 	CameraOrientation cam_view_target = {};
@@ -1046,9 +1048,16 @@ void Game::run()
 
 	auto framemarker = FrameMarker("Game::run()-frame").started();
 
+	infostream << "[DEBUG] Entering main game loop" << std::endl;
+	int loop_count = 0;
 	while (m_rendering_engine->run()
 			&& !(*kill || g_gamecallback->shutdown_requested
 			|| (server && server->isShutdownRequested()))) {
+
+		if (loop_count == 0) {
+			infostream << "[DEBUG] First game loop iteration" << std::endl;
+		}
+		loop_count++;
 
 		framemarker.end();
 
@@ -4342,8 +4351,15 @@ void the_game(volatile std::sig_atomic_t *kill,
 
 	try {
 
-		if (game.startup(kill, input, rendering_engine, start_data,
-				error_message, reconnect_requested, &chat_backend)) {
+		infostream << "[DEBUG] Calling game.startup()..." << std::endl;
+		bool startup_success = game.startup(kill, input, rendering_engine, start_data,
+				error_message, reconnect_requested, &chat_backend);
+		infostream << "[DEBUG] game.startup() returned: " << (startup_success ? "true" : "false") << std::endl;
+		if (!startup_success) {
+			infostream << "[DEBUG] Startup failed! Error message: " << error_message << std::endl;
+		}
+		if (startup_success) {
+			infostream << "[DEBUG] Calling game.run()..." << std::endl;
 			game.run();
 		}
 
