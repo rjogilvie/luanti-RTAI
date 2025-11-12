@@ -235,6 +235,7 @@ bool TrackingExporter::isNetworkMode() const
 void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 {
 #ifdef ENABLE_TRACKING_EXPORT
+
 	if (!m_impl->active || !driver)
 		return;
 
@@ -243,6 +244,7 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		return;
 	if (!m_impl->network_mode && !m_impl->bridge)
 		return;
+
 
 	// Get screen size
 	const core::dimension2du screen_size = driver->getScreenSize();
@@ -299,7 +301,6 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		}
 	}
 
-	// DEBUG: Log exportFramebuffer invocation
 	if (m_frames_exported % 60 == 0) {  // Log every 60 frames (~1 second at 60 FPS)
 		infostream << "[TrackingExporter] exportFramebuffer called (frame " << m_frames_exported
 		           << ", mode=" << (m_impl->network_mode ? "NETWORK" : "LOCAL") << ")" << std::endl;
@@ -307,7 +308,6 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 
 	// Send frame data based on mode
 	if (m_impl->network_mode) {
-		// DEBUG: Log network mode frame export attempt
 		if (m_frames_exported < 5 || m_frames_exported % 60 == 0) {
 			infostream << "[TrackingExporter] Attempting to send frame " << m_frames_exported
 			           << " via network (session_id=" << m_impl->current_session_id << ")" << std::endl;
@@ -349,9 +349,10 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		}
 
 		// Send frame via P2P connection to paired receiver
+
 		bool send_result = m_impl->frame_producer->SendFrame(frame);
 
-		// DEBUG: Log SendFrame result
+
 		if (!send_result) {
 			m_frames_failed++;
 			if (m_frames_failed <= 10 || m_frames_failed % 60 == 1) {
@@ -366,6 +367,7 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		// Local mode: write to shared memory via MinetestBridge
 		m_impl->bridge->SetFrameData(export_width, export_height, grayscale_data);
 	}
+
 
 	m_frames_exported++;
 
@@ -473,16 +475,22 @@ bool CheckTargetAcquisition(float target_x, float target_y,
 bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 {
 #ifdef ENABLE_TRACKING_EXPORT
-	if (!m_impl->active || !player)
+
+	if (!m_impl->active || !player) {
 		return false;
+	}
+
 
 	// Network mode: poll action from FrameProducer
 	// Local mode: not implemented yet (would use MinetestBridge)
-	if (!m_impl->network_mode || !m_impl->frame_producer)
+	if (!m_impl->network_mode || !m_impl->frame_producer) {
 		return false;
+	}
 
-	// Poll for action command from FrameProducer
-	auto cmd_opt = m_impl->frame_producer->PollAction();
+
+	// Poll for action command from FrameProducer (non-blocking, timeout=0)
+	auto cmd_opt = m_impl->frame_producer->PollAction(0);
+
 	if (!cmd_opt) {
 		return false;  // No action available
 	}
@@ -587,6 +595,7 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 	} else {
 		m_action_stats.actions_failed++;
 	}
+
 
 	return applied;
 #else

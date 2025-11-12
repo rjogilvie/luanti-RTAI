@@ -1013,7 +1013,6 @@ void Game::run()
 {
 	ZoneScoped;
 
-	infostream << "[DEBUG] Game::run() started" << std::endl;
 
 	ProfilerGraph graph;
 	RunStats stats = {};
@@ -1048,23 +1047,29 @@ void Game::run()
 
 	auto framemarker = FrameMarker("Game::run()-frame").started();
 
-	infostream << "[DEBUG] Entering main game loop" << std::endl;
+
+	// Detect headless/automated mode via force_rendering setting
+	// In headless mode, bypass m_rendering_engine->run() which blocks waiting for window events
+	bool headless_mode = g_settings->getBool("force_rendering");
+	if (headless_mode) {
+	}
+
 	int loop_count = 0;
-	while (m_rendering_engine->run()
+	while ((headless_mode || m_rendering_engine->run())
 			&& !(*kill || g_gamecallback->shutdown_requested
 			|| (server && server->isShutdownRequested()))) {
 
-		if (loop_count == 0) {
-			infostream << "[DEBUG] First game loop iteration" << std::endl;
-		}
 		loop_count++;
 
+
 		framemarker.end();
+
 
 		// Calculate dtime =
 		//    m_rendering_engine->run() from this iteration
 		//  + Sleep time until the wanted FPS are reached
 		draw_times.limit(device, &dtime);
+
 
 		framemarker.start();
 
@@ -2618,7 +2623,13 @@ void Game::updatePauseState()
 	bool was_paused = this->m_is_paused;
 	// Allow disabling autopause for automated/headless operation
 	bool allow_autopause = !g_settings->getBool("disable_singleplayer_autopause");
-	this->m_is_paused = this->simple_singleplayer_mode && allow_autopause && g_menumgr.pausesGame();
+	bool menu_pauses = g_menumgr.pausesGame();
+	this->m_is_paused = this->simple_singleplayer_mode && allow_autopause && menu_pauses;
+
+	static bool debug_printed = false;
+	if (!debug_printed) {
+		debug_printed = true;
+	}
 
 	if (!was_paused && this->m_is_paused) {
 		this->pauseAnimation();
@@ -3912,17 +3923,23 @@ void Game::handleDigging(const PointedThing &pointed, const v3s16 &nodepos,
 void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 		const CameraOrientation &cam)
 {
+	static int updateframe_count = 0;
+
 	ZoneScoped;
 	TimeTaker tt_update("Game::updateFrame()");
 	LocalPlayer *player = client->getEnv().getLocalPlayer();
+
 
 	/*
 		Apply camera control from tracking export (if enabled)
 	*/
 
+
+	// Apply camera control from actions (non-blocking since PollAction uses timeout=0)
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
 		m_tracking_exporter->applyCameraControl(player);
 	}
+
 
 #ifdef ENABLE_TRACKING_EXPORT
 	/*
@@ -3931,6 +3948,7 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
 		m_tracking_exporter->processTargetCommands();
 	}
+
 #endif
 
 	/*
@@ -3938,6 +3956,8 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	*/
 
 	client->getEnv().updateFrameTime(m_is_paused);
+
+
 
 	/*
 		Fog range
@@ -3974,6 +3994,7 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 				/ 255.0;
 	}
 
+
 	float time_of_day_smooth = runData.time_of_day_smooth;
 	float time_of_day = client->getEnv().getTimeOfDayF();
 
@@ -3997,6 +4018,7 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	sky->update(time_of_day_smooth, time_brightness, direct_brightness,
 			sunlight_seen, camera->getCameraMode(), player->getYaw(),
 			player->getPitch());
+
 
 	/*
 		Update clouds
@@ -4031,6 +4053,7 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	*/
 
 	updateChat(dtime);
+
 
 	/*
 		Inventory
@@ -4074,14 +4097,22 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 		updateShadows();
 	}
 
+
 	m_game_ui->update(*stats, client, draw_control, cam, runData.pointed_old,
 			gui_chat_console.get(), dtime);
 
 	m_game_formspec.update();
 
+
 	/*
 		==================== Drawing begins ====================
 	*/
+	static bool debug_printed = false;
+	if (!debug_printed) {
+		bool is_visible = device->isWindowVisible();
+		bool force_render = g_settings->getBool("force_rendering");
+		debug_printed = true;
+	}
 	if (device->isWindowVisible() || g_settings->getBool("force_rendering"))
 		drawScene(graph, stats);
 	/*
@@ -4245,8 +4276,18 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 
 #ifdef ENABLE_TRACKING_EXPORT
 	// Export framebuffer for RL pipeline (after rendering is complete)
+	static int export_count = 0;
+	if (export_count < 3) {
+		if (m_tracking_exporter) {
+		}
+	}
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
+		if (export_count < 3) {
+		}
 		m_tracking_exporter->exportFramebuffer(this->driver);
+		if (export_count < 3) {
+		}
+		export_count++;
 
 		// Register survival reward (dense, every frame)
 		constexpr float k_survival = 0.01f;
@@ -4351,15 +4392,11 @@ void the_game(volatile std::sig_atomic_t *kill,
 
 	try {
 
-		infostream << "[DEBUG] Calling game.startup()..." << std::endl;
 		bool startup_success = game.startup(kill, input, rendering_engine, start_data,
 				error_message, reconnect_requested, &chat_backend);
-		infostream << "[DEBUG] game.startup() returned: " << (startup_success ? "true" : "false") << std::endl;
 		if (!startup_success) {
-			infostream << "[DEBUG] Startup failed! Error message: " << error_message << std::endl;
 		}
 		if (startup_success) {
-			infostream << "[DEBUG] Calling game.run()..." << std::endl;
 			game.run();
 		}
 
