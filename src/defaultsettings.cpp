@@ -137,6 +137,13 @@ void set_default_settings()
 	settings->setDefault("tracking_server_host", "127.0.0.1");
 	settings->setDefault("tracking_tcp_port", "7001");
 	settings->setDefault("tracking_client_id", "luanti_producer");
+	// Dataset generation mode
+	settings->setDefault("dataset_mode", "false");
+	settings->setDefault("dataset_output_dir", "./dataset_output");
+	settings->setDefault("dataset_semantic_grid_size", "128");
+	settings->setDefault("dataset_max_frames", "0");
+	settings->setDefault("dataset_walk_speed", "1.0");
+	settings->setDefault("dataset_frame_skip", "1");
 	// Rendering settings for headless/automated environments
 	settings->setDefault("force_rendering", "false");
 	// Disable automatic pause in singleplayer mode (for automated/headless operation)

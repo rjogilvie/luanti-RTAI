@@ -80,5 +80,8 @@ set(client_SRCS
 	${CMAKE_CURRENT_SOURCE_DIR}/shadows/shadowsshadercallbacks.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/shadows/shadowsScreenQuad.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/tracking_export.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/dataset_generator.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/semantic_segmenter.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/frame_dumper.cpp
 	PARENT_SCOPE
 )

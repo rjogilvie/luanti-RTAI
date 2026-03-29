@@ -136,6 +136,28 @@ public:
 	void registerRewardEvent(const std::string& event_type, float reward_value);
 
 	/**
+	 * Get the raw RGB pixel buffer from the last frame capture
+	 * Available after exportFramebuffer() is called
+	 * @return pointer to RGB pixel data (width * height * 3), or nullptr if no frame captured
+	 */
+	const u8* getRGBPixelBuffer() const { return m_pixel_buffer; }
+
+	/**
+	 * Get the width of the last captured frame
+	 */
+	u32 getFrameWidth() const { return m_frame_width; }
+
+	/**
+	 * Get the height of the last captured frame
+	 */
+	u32 getFrameHeight() const { return m_frame_height; }
+
+	/**
+	 * Get the total number of frames exported
+	 */
+	u64 getFrameCount() const { return m_frames_exported; }
+
+	/**
 	 * Action feedback statistics
 	 */
 	struct ActionStats {
