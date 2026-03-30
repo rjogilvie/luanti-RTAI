@@ -12,6 +12,7 @@
 class Camera;
 class ClientEnvironment;
 class NodeDefManager;
+class ClientActiveObject;
 
 namespace tracking {
 
@@ -46,6 +47,8 @@ public:
 
 	/**
 	 * Get the raw content_t grid (grid_size x grid_size)
+	 * Values 0-0xDFFF are node content_t IDs.
+	 * Values 0xE000+ are entity type IDs (0xE000 + ActiveObjectType).
 	 */
 	const std::vector<content_t>& getContentGrid() const { return m_content_grid; }
 
@@ -54,22 +57,41 @@ public:
 	 */
 	const std::vector<u8>& getColorGrid() const { return m_color_grid; }
 
+	/**
+	 * Get the depth grid (grid_size x grid_size)
+	 * Distance from camera to hit surface in node units.
+	 * Sky/miss pixels contain m_max_ray_distance.
+	 */
+	const std::vector<float>& getDepthGrid() const { return m_depth_grid; }
+
+	/**
+	 * Get the instance ID grid (grid_size x grid_size)
+	 * Spatially-stable hash for voxels (same block = same ID across frames).
+	 * Entity object IDs for active objects. 0 = sky/miss.
+	 */
+	const std::vector<u32>& getInstanceGrid() const { return m_instance_grid; }
+
 	u32 getGridSize() const { return m_grid_size; }
 
 	/**
 	 * Build content_t -> {name, color} mapping as JSON string
-	 * Call after node definitions are fully loaded
+	 * Includes both node types and entity type entries.
 	 */
 	std::string buildContentMapJSON(const NodeDefManager *ndef) const;
 
 private:
+	void overlayEntities(Camera *camera, ClientEnvironment *env, const NodeDefManager *ndef);
+
 	bool m_active = false;
 	u32 m_grid_size = 128;
 	float m_max_ray_distance = 100.0f;
+	u64 m_capture_count = 0;
 
 	// Output buffers
 	std::vector<content_t> m_content_grid;  // grid_size * grid_size
 	std::vector<u8> m_color_grid;           // grid_size * grid_size * 3 (RGB)
+	std::vector<float> m_depth_grid;        // grid_size * grid_size (node units)
+	std::vector<u32> m_instance_grid;       // grid_size * grid_size
 };
 
 } // namespace tracking

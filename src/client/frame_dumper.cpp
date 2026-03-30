@@ -34,6 +34,9 @@ bool FrameDumper::initialize(const std::string &output_dir, u32 frame_skip, u64 
 	ok = ok && fs::CreateDir(output_dir + "/rgb");
 	ok = ok && fs::CreateDir(output_dir + "/semantic_color");
 	ok = ok && fs::CreateDir(output_dir + "/semantic_raw");
+	ok = ok && fs::CreateDir(output_dir + "/depth");
+	ok = ok && fs::CreateDir(output_dir + "/depth_color");
+	ok = ok && fs::CreateDir(output_dir + "/instance");
 
 	if (!ok) {
 		errorstream << "[FrameDumper] Failed to create output directories at: "
@@ -119,6 +122,51 @@ void FrameDumper::dumpSemanticRaw(const content_t *content_ids, u32 width, u32 h
 	file.write(reinterpret_cast<const char*>(&height), sizeof(u32));
 	// Write content_t array
 	file.write(reinterpret_cast<const char*>(content_ids), width * height * sizeof(content_t));
+	file.close();
+}
+
+void FrameDumper::dumpDepth(const float *depth, u32 width, u32 height,
+                            u64 frame_num, float max_depth)
+{
+	if (!m_active || !depth)
+		return;
+
+	// Binary depth file (float32)
+	std::string bin_path = m_output_dir + "/depth/frame_" + formatFrameNum(frame_num) + ".bin";
+	std::ofstream bin_file(bin_path, std::ios::out | std::ios::binary);
+	if (bin_file.is_open()) {
+		bin_file.write(reinterpret_cast<const char*>(&width), sizeof(u32));
+		bin_file.write(reinterpret_cast<const char*>(&height), sizeof(u32));
+		bin_file.write(reinterpret_cast<const char*>(depth), width * height * sizeof(float));
+		bin_file.close();
+	}
+
+	// Grayscale depth visualization PPM (near=white, far=black)
+	std::vector<u8> depth_rgb(width * height * 3);
+	for (u32 i = 0; i < width * height; i++) {
+		float normalized = 1.0f - std::min(depth[i] / max_depth, 1.0f);
+		u8 val = static_cast<u8>(normalized * 255.0f);
+		depth_rgb[i * 3 + 0] = val;
+		depth_rgb[i * 3 + 1] = val;
+		depth_rgb[i * 3 + 2] = val;
+	}
+	std::string ppm_path = m_output_dir + "/depth_color/frame_" + formatFrameNum(frame_num) + ".ppm";
+	writePPM(ppm_path, depth_rgb.data(), width, height);
+}
+
+void FrameDumper::dumpInstanceIDs(const u32 *instance_ids, u32 width, u32 height, u64 frame_num)
+{
+	if (!m_active || !instance_ids)
+		return;
+
+	std::string path = m_output_dir + "/instance/frame_" + formatFrameNum(frame_num) + ".bin";
+	std::ofstream file(path, std::ios::out | std::ios::binary);
+	if (!file.is_open())
+		return;
+
+	file.write(reinterpret_cast<const char*>(&width), sizeof(u32));
+	file.write(reinterpret_cast<const char*>(&height), sizeof(u32));
+	file.write(reinterpret_cast<const char*>(instance_ids), width * height * sizeof(u32));
 	file.close();
 }
 

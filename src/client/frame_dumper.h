@@ -68,6 +68,26 @@ public:
 	void dumpSemanticRaw(const content_t *content_ids, u32 width, u32 height, u64 frame_num);
 
 	/**
+	 * Dump depth buffer to disk as binary float32
+	 * @param depth Depth values in node units
+	 * @param width Grid width
+	 * @param height Grid height
+	 * @param frame_num Frame sequence number
+	 * @param max_depth Maximum depth value (for visualization normalization)
+	 */
+	void dumpDepth(const float *depth, u32 width, u32 height, u64 frame_num,
+	               float max_depth = 100.0f);
+
+	/**
+	 * Dump instance IDs to disk as binary uint32
+	 * @param instance_ids Instance ID values
+	 * @param width Grid width
+	 * @param height Grid height
+	 * @param frame_num Frame sequence number
+	 */
+	void dumpInstanceIDs(const u32 *instance_ids, u32 width, u32 height, u64 frame_num);
+
+	/**
 	 * Write per-frame metadata as a JSONL line
 	 */
 	void writeFrameMetadata(u64 frame_num, u64 timestamp_us,

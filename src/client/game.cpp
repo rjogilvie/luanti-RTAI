@@ -4354,6 +4354,10 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 				m_semantic_segmenter->getColorGrid().data(), gs, gs, frame_num);
 			m_frame_dumper->dumpSemanticRaw(
 				m_semantic_segmenter->getContentGrid().data(), gs, gs, frame_num);
+			m_frame_dumper->dumpDepth(
+				m_semantic_segmenter->getDepthGrid().data(), gs, gs, frame_num);
+			m_frame_dumper->dumpInstanceIDs(
+				m_semantic_segmenter->getInstanceGrid().data(), gs, gs, frame_num);
 		}
 
 		// Dump metadata
