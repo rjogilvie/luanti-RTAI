@@ -103,6 +103,11 @@ public:
 
 	void renderMap(video::IVideoDriver* driver, s32 pass);
 
+#ifdef ENABLE_TRACKING_EXPORT
+	/// Render semantic segmentation meshes (flat content_t-encoded colors)
+	void renderSemanticMap(video::IVideoDriver *driver);
+#endif
+
 	void renderMapShadows(video::IVideoDriver *driver,
 			const video::SMaterial &material, s32 pass, int frame, int total_frames);
 

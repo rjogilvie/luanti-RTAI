@@ -133,7 +133,7 @@ void MapblockMeshGenerator::drawQuad(const TileSpec &tile, v3f *coords, const v3
 			applyFacesShading(vertices[j].Color, normal2);
 		vertices[j].TCoords = tcoords[j];
 	}
-	collector->append(tile, vertices, 4, quad_indices, 6);
+	collector->append(tile, vertices, 4, quad_indices, 6, cur_node.n.getContent());
 }
 
 static std::array<video::S3DVertex, 24> setupCuboidVertices(const aabb3f &box,
@@ -274,7 +274,7 @@ void MapblockMeshGenerator::drawCuboid(const aabb3f &box,
 		QuadDiagonal diagonal = face_lighter(k, &vertices[4 * k]);
 		const u16 *indices = diagonal == QuadDiagonal::Diag13 ? quad_indices_13 : quad_indices_02;
 		int tileindex = MYMIN(k, tilecount - 1);
-		collector->append(tiles[tileindex], &vertices[4 * k], 4, indices, 6);
+		collector->append(tiles[tileindex], &vertices[4 * k], 4, indices, 6, cur_node.n.getContent());
 	}
 }
 
@@ -741,7 +741,7 @@ void MapblockMeshGenerator::drawLiquidSides()
 					color,
 					vertex.u, v);
 		};
-		collector->append(cur_liquid.tile, vertices, 4, quad_indices, 6);
+		collector->append(cur_liquid.tile, vertices, 4, quad_indices, 6, cur_node.n.getContent());
 	}
 }
 
@@ -822,7 +822,7 @@ void MapblockMeshGenerator::drawLiquidTop()
 
 	std::swap(vertices[0].TCoords, vertices[2].TCoords);
 
-	collector->append(cur_liquid.tile_top, vertices, 4, quad_indices, 6);
+	collector->append(cur_liquid.tile_top, vertices, 4, quad_indices, 6, cur_node.n.getContent());
 }
 
 void MapblockMeshGenerator::drawLiquidBottom()
@@ -840,7 +840,7 @@ void MapblockMeshGenerator::drawLiquidBottom()
 		vertices[i].Pos += cur_node.origin;
 	}
 
-	collector->append(cur_liquid.tile_top, vertices, 4, quad_indices, 6);
+	collector->append(cur_liquid.tile_top, vertices, 4, quad_indices, 6, cur_node.n.getContent());
 }
 
 void MapblockMeshGenerator::drawLiquidNode()
@@ -1758,7 +1758,7 @@ void MapblockMeshGenerator::drawMeshNode()
 			}
 		}
 		collector->append(tile, vertices, vertex_count,
-			buf->getIndices(), buf->getIndexCount());
+			buf->getIndices(), buf->getIndexCount(), cur_node.n.getContent());
 	}
 	mesh->drop();
 }

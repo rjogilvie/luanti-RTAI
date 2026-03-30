@@ -66,6 +66,7 @@
 	#include "dataset_generator.h"
 	#include "semantic_segmenter.h"
 	#include "frame_dumper.h"
+	#include "render/semantic_step.h"
 	#include <chrono>
 #endif
 
@@ -4330,9 +4331,11 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 	if (dataset_ready && m_frame_dumper && m_frame_dumper->isActive() && m_frame_dumper->shouldDumpFrame(frame_num)) {
 
 		// Write content map on first frame
-		if (m_semantic_segmenter && m_frame_dumper->framesDumped() == 0) {
-			std::string content_json = m_semantic_segmenter->buildContentMapJSON(client->ndef());
-			m_frame_dumper->writeContentMap(content_json);
+		if (m_frame_dumper->framesDumped() == 0) {
+			if (m_semantic_segmenter) {
+				std::string content_json = m_semantic_segmenter->buildContentMapJSON(client->ndef());
+				m_frame_dumper->writeContentMap(content_json);
+			}
 		}
 
 		// Dump RGB frame
@@ -4346,7 +4349,43 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 		}
 
 		// Capture and dump semantic segmentation
-		if (m_semantic_segmenter && m_semantic_segmenter->isActive()) {
+		// Prefer GPU render pass (full resolution) over CPU raycast
+		DrawSemanticMap *gpu_sem = DrawSemanticMap::getInstance();
+		if (gpu_sem && gpu_sem->hasData()) {
+			// GPU path: full-resolution semantic from FBO
+			u32 sw = gpu_sem->getWidth();
+			u32 sh = gpu_sem->getHeight();
+			const u8 *sem_rgb = gpu_sem->getPixels();
+
+			// Decode content_t from RGB encoding and build visualization
+			std::vector<content_t> content_ids(sw * sh);
+			std::vector<u8> vis_rgb(sw * sh * 3);
+			const NodeDefManager *ndef = client->ndef();
+
+			for (u32 i = 0; i < sw * sh; i++) {
+				u8 r = sem_rgb[i * 3 + 0];
+				u8 g = sem_rgb[i * 3 + 1];
+				content_t cid = (static_cast<content_t>(r) << 8) | g;
+				content_ids[i] = cid;
+
+				// Map to minimap_color for visualization
+				if (cid != CONTENT_AIR && cid != CONTENT_IGNORE && cid != 0) {
+					const ContentFeatures &f = ndef->get(cid);
+					video::SColor c = f.minimap_color;
+					vis_rgb[i * 3 + 0] = c.getRed();
+					vis_rgb[i * 3 + 1] = c.getGreen();
+					vis_rgb[i * 3 + 2] = c.getBlue();
+				} else {
+					vis_rgb[i * 3 + 0] = 0;
+					vis_rgb[i * 3 + 1] = 0;
+					vis_rgb[i * 3 + 2] = 0;
+				}
+			}
+
+			m_frame_dumper->dumpSemanticColor(vis_rgb.data(), sw, sh, frame_num);
+			m_frame_dumper->dumpSemanticRaw(content_ids.data(), sw, sh, frame_num);
+		} else if (m_semantic_segmenter && m_semantic_segmenter->isActive()) {
+			// CPU raycast fallback
 			m_semantic_segmenter->capture(camera, &client->getEnv(), client->ndef());
 
 			u32 gs = m_semantic_segmenter->getGridSize();

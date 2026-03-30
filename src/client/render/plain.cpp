@@ -12,6 +12,10 @@
 #include "client/minimap.h"
 #include "client/shadows/dynamicshadowsrender.h"
 #include <IGUIEnvironment.h>
+#ifdef ENABLE_TRACKING_EXPORT
+#include "semantic_step.h"
+#include "settings.h"
+#endif
 
 /// Draw3D pipeline step
 void Draw3D::run(PipelineContext &context)
@@ -146,6 +150,23 @@ void populatePlainPipeline(RenderPipeline *pipeline, Client *client)
 	pipeline->addStep(step3D);
 	pipeline->addStep<DrawWield>();
 	pipeline->addStep<MapPostFxStep>();
+
+#ifdef ENABLE_TRACKING_EXPORT
+	if (g_settings->getBool("dataset_mode")) {
+		auto *driver = client->getSceneManager()->getVideoDriver();
+		auto depth_fmt = selectDepthFormat(driver);
+
+		TextureBuffer *sem_buf = pipeline->createOwned<TextureBuffer>();
+		sem_buf->setTexture(0, v2f(1.0f), "semantic_color", video::ECF_A8R8G8B8);
+		sem_buf->setTexture(1, v2f(1.0f), "semantic_depth", depth_fmt);
+
+		auto *sem_output = pipeline->createOwned<TextureBufferOutput>(
+			sem_buf, std::vector<u8>{0}, u8(1));
+
+		auto *sem_step = pipeline->addStep<DrawSemanticMap>(client, sem_buf);
+		sem_step->setRenderTarget(sem_output);
+	}
+#endif
 
 	step3D = addUpscaling(pipeline, step3D, downscale_factor, client);
 

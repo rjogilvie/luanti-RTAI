@@ -7,6 +7,7 @@
 #include <vector>
 #include "irrlichttypes.h"
 #include "irr_v3d.h"
+#include "mapnode.h"
 #include <S3DVertex.h>
 #include "client/tile.h"
 
@@ -15,6 +16,7 @@ struct PreMeshBuffer
 	TileLayer layer;
 	std::vector<u16> indices;
 	std::vector<video::S3DVertex> vertices;
+	std::vector<content_t> vertex_content_ids; // parallel to vertices: node type per vertex
 
 	PreMeshBuffer() = default;
 	explicit PreMeshBuffer(const TileLayer &layer) : layer(layer) {}
@@ -47,15 +49,22 @@ struct MeshCollector
 	// offset: offset added to vertices
 	MeshCollector(const v3f center_pos, v3f offset = v3f()) : m_center_pos(center_pos), offset(offset) {}
 
+	// Append vertices without content_t tracking (backward-compatible)
 	void append(const TileSpec &material,
 			const video::S3DVertex *vertices, u32 numVertices,
 			const u16 *indices, u32 numIndices);
+
+	// Append vertices with content_t tracking for semantic segmentation
+	void append(const TileSpec &material,
+			const video::S3DVertex *vertices, u32 numVertices,
+			const u16 *indices, u32 numIndices,
+			content_t content_id);
 
 private:
 	void append(const TileLayer &material,
 			const video::S3DVertex *vertices, u32 numVertices,
 			const u16 *indices, u32 numIndices,
-			u8 layernum);
+			u8 layernum, content_t content_id = CONTENT_IGNORE);
 
 	PreMeshBuffer &findBuffer(const TileLayer &layer, u8 layernum, u32 numVertices);
 };

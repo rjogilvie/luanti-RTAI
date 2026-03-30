@@ -257,9 +257,18 @@ public:
 		return m_transparent_buffers;
 	}
 
+#ifdef ENABLE_TRACKING_EXPORT
+	/// Get the semantic segmentation mesh (flat content_t-encoded vertex colors)
+	/// Returns nullptr if not in dataset mode
+	scene::IMesh *getSemanticMesh() const { return m_semantic_mesh.get(); }
+#endif
+
 private:
 
 	irr_ptr<scene::IMesh> m_mesh[MAX_TILE_LAYERS];
+#ifdef ENABLE_TRACKING_EXPORT
+	irr_ptr<scene::IMesh> m_semantic_mesh;
+#endif
 	std::vector<MinimapMapblock*> m_minimap_mapblocks;
 	ITextureSource *m_tsrc;
 	IShaderSource *m_shdrsrc;

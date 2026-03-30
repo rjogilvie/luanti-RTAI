@@ -23,6 +23,8 @@
 #include "client/texturesource.h"
 #include <SMesh.h>
 #include <IMeshBuffer.h>
+#include "settings.h"
+#include "nodedef.h"
 #include <CMeshBuffer.h>
 
 /*
@@ -724,6 +726,55 @@ MapBlockMesh::MapBlockMesh(Client *client, MeshMakeData *data):
 	m_has_animation =
 		!m_crack_materials.empty() ||
 		!m_animation_info.empty();
+
+#ifdef ENABLE_TRACKING_EXPORT
+	// Build semantic mesh: same geometry with flat content_t-encoded vertex colors
+	if (g_settings->getBool("dataset_mode")) {
+		m_semantic_mesh = make_irr<scene::SMesh>();
+		auto *semantic_mesh = static_cast<scene::SMesh*>(m_semantic_mesh.get());
+		const NodeDefManager *ndef = client->ndef();
+
+		for (int layer = 0; layer < MAX_TILE_LAYERS; layer++) {
+			for (auto &p : collector.prebuffers[layer]) {
+				if (p.vertices.empty())
+					continue;
+
+				scene::SMeshBuffer *buf = new scene::SMeshBuffer();
+
+				// Flat, unlit material -- vertex colors only
+				video::SMaterial &mat = buf->Material;
+				mat.MaterialType = video::EMT_SOLID;
+				mat.FogEnable = false;
+				mat.BackfaceCulling = true;
+				mat.setTexture(0, nullptr);
+
+				// Clone vertices with semantic colors
+				std::vector<video::S3DVertex> sem_verts(p.vertices.size());
+				for (u32 v = 0; v < p.vertices.size(); v++) {
+					sem_verts[v].Pos = p.vertices[v].Pos;
+					sem_verts[v].Normal = p.vertices[v].Normal;
+					sem_verts[v].TCoords = core::vector2df(0, 0);
+
+					content_t cid = (v < p.vertex_content_ids.size())
+						? p.vertex_content_ids[v] : CONTENT_IGNORE;
+
+					// Encode content_t directly into RGB: R=high byte, G=low byte, B=0
+					// This is collision-free and allows exact recovery: cid = (R<<8)|G
+					u8 r = (cid >> 8) & 0xFF;
+					u8 g = cid & 0xFF;
+					sem_verts[v].Color = video::SColor(255, r, g, 0);
+				}
+
+				buf->append(sem_verts.data(), sem_verts.size(),
+					p.indices.data(), p.indices.size());
+				semantic_mesh->addMeshBuffer(buf);
+				buf->drop();
+			}
+		}
+
+		semantic_mesh->setHardwareMappingHint(scene::EHM_STATIC);
+	}
+#endif
 }
 
 MapBlockMesh::~MapBlockMesh()
