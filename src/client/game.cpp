@@ -4412,7 +4412,7 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 		// Auto-shutdown when max frames reached
 		if (m_frame_dumper->isFinished()) {
 			infostream << "[Dataset] Max frames reached, requesting shutdown" << std::endl;
-			m_shutdown_progress = 1.0f;
+			g_gamecallback->exitToOS();
 		}
 	}
 #endif
