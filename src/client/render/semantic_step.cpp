@@ -41,6 +41,10 @@ void DrawSemanticMap::run(PipelineContext &context)
 
 	// Read back the FBO
 	readbackFBO(context);
+
+	// Restore the screen framebuffer so subsequent steps (DrawHUD, screenshot)
+	// render to/read from the screen, not the semantic FBO
+	driver->setRenderTarget(nullptr, false, false);
 }
 
 void DrawSemanticMap::readbackFBO(PipelineContext &context)
