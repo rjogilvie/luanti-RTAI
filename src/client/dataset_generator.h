@@ -6,6 +6,7 @@
 
 #include "irrlichttypes.h"
 #include "player.h"
+#include "mapnode.h"
 #include <random>
 
 class LocalPlayer;
@@ -20,9 +21,13 @@ namespace tracking {
  * turn, look at things, and avoid getting stuck or falling.
  *
  * State machine:
- *   WALKING -> TURNING -> LOOKING -> WALKING (loop)
- *      |                                 ^
- *      +---> RECOVERING -----------------+
+ *   WALKING -> TURNING -> WALKING (loop)
+ *      |         ^
+ *      +-> LOOKING -> TURNING
+ *      |         ^
+ *      +-> GAZING (ACQUIRE -> APPROACH -> STARE) -> TURNING
+ *      |                                    ^
+ *      +---> RECOVERING --------------------+
  *
  * Hazard detection:
  *   - Falling: Y velocity negative for >0.5s -> recover
@@ -56,7 +61,21 @@ private:
 		WALKING,
 		TURNING,
 		LOOKING,
+		GAZING,
 		RECOVERING  // replaces UNSTICKING -- handles falls, stuck, liquid
+	};
+
+	enum class GazePhase {
+		ACQUIRE,   // scanning for target (instant, no frames)
+		APPROACH,  // walking toward target, rotating camera
+		STARE,     // stationary, tracking target with drift
+	};
+
+	struct GazeTarget {
+		v3f position;       // BS-space world position
+		bool is_entity = false;
+		u16 entity_id = 0;
+		float interest = 0.0f; // higher = more interesting
 	};
 
 	void enterState(State state);
@@ -64,12 +83,24 @@ private:
 	                   ClientEnvironment *env, float dtime);
 	void updateTurning(PlayerControl &control, float dtime);
 	void updateLooking(PlayerControl &control, float dtime);
+	void updateGazing(PlayerControl &control, LocalPlayer *player,
+	                  ClientEnvironment *env, float dtime);
 	void updateRecovering(PlayerControl &control, LocalPlayer *player, float dtime);
 
 	// Hazard detection
 	bool checkFalling(LocalPlayer *player, float dtime);
 	bool checkStuck(LocalPlayer *player, float dtime);
 	bool checkDropAhead(LocalPlayer *player, ClientEnvironment *env);
+
+	// Gazing helpers
+	bool findGazeTarget(LocalPlayer *player, ClientEnvironment *env, GazeTarget &out);
+	bool scanNearbyBlocks(LocalPlayer *player, ClientEnvironment *env, GazeTarget &best);
+	bool scanNearbyEntities(LocalPlayer *player, ClientEnvironment *env, GazeTarget &best);
+	bool hasLineOfSight(const v3f &from_nodes, const v3f &to_nodes, ClientEnvironment *env);
+	bool isInterestingNode(content_t c, ClientEnvironment *env) const;
+	void computeGazeAngles(const v3f &player_pos, const v3f &target_pos,
+	                       float &out_yaw, float &out_pitch);
+	void updateEntityTargetPosition(ClientEnvironment *env);
 
 	// Helpers
 	float randomFloat(float min, float max);
@@ -105,6 +136,16 @@ private:
 
 	// State tracking
 	int m_walk_cycles = 0;
+
+	// Gazing state
+	GazePhase m_gaze_phase = GazePhase::ACQUIRE;
+	v3f m_gaze_target_pos = v3f(0, 0, 0);
+	bool m_gaze_is_entity = false;
+	u16 m_gaze_entity_id = 0;
+	float m_gaze_approach_duration = 0.0f;
+	float m_gaze_stare_duration = 0.0f;
+	float m_gaze_phase_timer = 0.0f;
+	float m_gaze_drift_phase = 0.0f;
 
 	// RNG
 	std::mt19937 m_rng;
