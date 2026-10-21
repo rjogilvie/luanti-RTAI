@@ -575,8 +575,8 @@ void DatasetGenerator::updateGazing(PlayerControl &control, LocalPlayer *player,
 		m_gaze_target_pos = target.position;
 		m_gaze_is_entity = target.is_entity;
 		m_gaze_entity_id = target.entity_id;
-		m_gaze_approach_duration = randomFloat(2.0f, 4.0f);
-		m_gaze_stare_duration = randomFloat(1.0f, 3.0f);
+		m_gaze_approach_duration = randomFloat(3.0f, 6.0f);
+		m_gaze_stare_duration = randomFloat(3.0f, 6.0f);
 		m_state_duration = m_gaze_approach_duration + m_gaze_stare_duration + 0.5f;
 
 		v3f player_eye = player->getPosition() + v3f(0, 1.625f * BS, 0);
