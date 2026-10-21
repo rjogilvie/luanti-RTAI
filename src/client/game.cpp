@@ -1005,6 +1005,10 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 
 		if (initialized) {
 			infostream << "[Tracking] ✓ Tracking export initialized successfully" << std::endl;
+			if (g_settings->getBool("tracking_hide_hud")) {
+				m_game_ui->m_flags.show_hud = false;
+				m_game_ui->m_flags.show_chat = false;
+			}
 		} else {
 			errorstream << "[Tracking] ✗ Failed to initialize tracking export" << std::endl;
 			m_tracking_exporter.reset();
