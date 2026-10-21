@@ -18,8 +18,21 @@ void MeshCollector::append(const TileSpec &tile, const video::S3DVertex *vertice
 	}
 }
 
+void MeshCollector::append(const TileSpec &tile, const video::S3DVertex *vertices,
+		u32 numVertices, const u16 *indices, u32 numIndices,
+		content_t content_id)
+{
+	for (int layernum = 0; layernum < MAX_TILE_LAYERS; layernum++) {
+		const TileLayer &layer = tile.layers[layernum];
+		if (layer.empty())
+			continue;
+		append(layer, vertices, numVertices, indices, numIndices, layernum, content_id);
+	}
+}
+
 void MeshCollector::append(const TileLayer &layer, const video::S3DVertex *vertices,
-		u32 numVertices, const u16 *indices, u32 numIndices, u8 layernum)
+		u32 numVertices, const u16 *indices, u32 numIndices, u8 layernum,
+		content_t content_id)
 {
 	PreMeshBuffer &p = findBuffer(layer, layernum, numVertices);
 
@@ -27,6 +40,7 @@ void MeshCollector::append(const TileLayer &layer, const video::S3DVertex *verti
 	for (u32 i = 0; i < numVertices; i++) {
 		p.vertices.emplace_back(vertices[i].Pos + offset, vertices[i].Normal,
 				vertices[i].Color, vertices[i].TCoords);
+		p.vertex_content_ids.push_back(content_id);
 		m_bounding_radius_sq = std::max(m_bounding_radius_sq,
 				(vertices[i].Pos - m_center_pos).getLengthSQ());
 	}

@@ -63,6 +63,11 @@
 
 #ifdef ENABLE_TRACKING_EXPORT
 	#include "tracking_export.h"
+	#include "dataset_generator.h"
+	#include "semantic_segmenter.h"
+	#include "frame_dumper.h"
+	#include "render/semantic_step.h"
+	#include <chrono>
 #endif
 
 #if USE_SOUND
@@ -865,6 +870,10 @@ private:
 #ifdef ENABLE_TRACKING_EXPORT
 	// Tracking export for RL pipeline
 	std::unique_ptr<tracking::TrackingExporter> m_tracking_exporter;
+	// Dataset generation components
+	std::unique_ptr<tracking::DatasetGenerator> m_dataset_generator;
+	std::unique_ptr<tracking::SemanticSegmenter> m_semantic_segmenter;
+	std::unique_ptr<tracking::FrameDumper> m_frame_dumper;
 #endif
 };
 
@@ -974,17 +983,16 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 		bool initialized = false;
 
 		if (tracking_mode == "network") {
-			// Network mode: distributed training
-			int port = g_settings->getU16("tracking_port");
-			std::string bind_addr = g_settings->get("tracking_bind_addr");
-			std::string broadcast_addr = g_settings->get("tracking_broadcast_addr");
+			// Network mode: P2P via NetworkServer
+			std::string server_host = g_settings->get("tracking_server_host");
+			uint16_t tcp_port = g_settings->getU16("tracking_tcp_port");
+			std::string client_id = g_settings->get("tracking_client_id");
 
-			infostream << "[Tracking] Initializing in NETWORK mode..." << std::endl;
-			infostream << "[Tracking]   Port: " << port << std::endl;
-			infostream << "[Tracking]   Bind address: " << bind_addr << std::endl;
-			infostream << "[Tracking]   Broadcast address: " << broadcast_addr << std::endl;
+			infostream << "[Tracking] Initializing in NETWORK mode (P2P)..." << std::endl;
+			infostream << "[Tracking]   Server: " << server_host << ":" << tcp_port << std::endl;
+			infostream << "[Tracking]   Client ID: " << client_id << std::endl;
 
-			initialized = m_tracking_exporter->initializeNetwork(port, bind_addr, broadcast_addr);
+			initialized = m_tracking_exporter->initializeNetwork(server_host, tcp_port, client_id);
 		} else {
 			// Local mode: shared memory (default)
 			std::string shm_name = g_settings->get("tracking_shm_name");
@@ -1003,6 +1011,33 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 		}
 	} else {
 		infostream << "[Tracking] Tracking export disabled (enable_tracking_export=false)" << std::endl;
+	}
+
+	// Initialize dataset generation mode
+	if (g_settings->getBool("dataset_mode")) {
+		infostream << "[Dataset] Initializing dataset generation mode..." << std::endl;
+
+		// Dataset generator (procedural walking agent)
+		m_dataset_generator = std::make_unique<tracking::DatasetGenerator>();
+		float walk_speed = g_settings->getFloat("dataset_walk_speed", 0.1f, 1.0f);
+		m_dataset_generator->activate(walk_speed);
+
+		// Semantic segmenter
+		m_semantic_segmenter = std::make_unique<tracking::SemanticSegmenter>();
+		u32 grid_size = g_settings->getU32("dataset_semantic_grid_size");
+		m_semantic_segmenter->initialize(grid_size);
+
+		// Frame dumper
+		m_frame_dumper = std::make_unique<tracking::FrameDumper>();
+		std::string output_dir = g_settings->get("dataset_output_dir");
+		u32 frame_skip = g_settings->getU32("dataset_frame_skip");
+		u64 max_frames = g_settings->getU64("dataset_max_frames");
+		if (!m_frame_dumper->initialize(output_dir, frame_skip, max_frames)) {
+			errorstream << "[Dataset] Failed to initialize frame dumper" << std::endl;
+			m_frame_dumper.reset();
+		}
+
+		infostream << "[Dataset] ✓ Dataset generation initialized" << std::endl;
 	}
 #endif
 
@@ -1105,6 +1140,19 @@ void Game::run()
 				cam_view.camera_pitch) * m_cache_cam_smoothing;
 		updatePlayerControl(cam_view);
 
+#ifdef ENABLE_TRACKING_EXPORT
+		// Dataset mode: override player control with procedural walking agent
+		if (m_dataset_generator && m_dataset_generator->isActive()) {
+			LocalPlayer *player = client->getEnv().getLocalPlayer();
+			if (player) {
+				PlayerControl override_control = player->control;
+				m_dataset_generator->update(override_control, player,
+					&client->getEnv(), dtime);
+				client->setPlayerControl(override_control);
+			}
+		}
+#endif
+
 		updatePauseState();
 		if (m_is_paused)
 			dtime = 0.0f;
@@ -1138,7 +1186,12 @@ void Game::run()
 void Game::shutdown()
 {
 #ifdef ENABLE_TRACKING_EXPORT
-	// Shutdown tracking export first
+	// Shutdown dataset components
+	m_dataset_generator.reset();
+	m_semantic_segmenter.reset();
+	m_frame_dumper.reset();
+
+	// Shutdown tracking export
 	if (m_tracking_exporter) {
 		m_tracking_exporter->shutdown();
 		m_tracking_exporter.reset();
@@ -2608,7 +2661,9 @@ void Game::updatePlayerControl(const CameraOrientation &cam)
 void Game::updatePauseState()
 {
 	bool was_paused = this->m_is_paused;
-	this->m_is_paused = this->simple_singleplayer_mode && g_menumgr.pausesGame();
+	// Allow disabling autopause for automated/headless operation
+	bool allow_autopause = !g_settings->getBool("disable_singleplayer_autopause");
+	this->m_is_paused = this->simple_singleplayer_mode && allow_autopause && g_menumgr.pausesGame();
 
 	if (!was_paused && this->m_is_paused) {
 		this->pauseAnimation();
@@ -4072,7 +4127,7 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	/*
 		==================== Drawing begins ====================
 	*/
-	if (device->isWindowVisible())
+	if (device->isWindowVisible() || g_settings->getBool("force_rendering"))
 		drawScene(graph, stats);
 	/*
 		==================== End scene ====================
@@ -4261,6 +4316,103 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 				// Initialize on first frame
 				previous_hp = current_hp;
 			}
+		}
+	}
+
+	// Dataset mode: dump frames, semantic masks, and metadata
+	// Wait until player is on the ground before starting capture
+	u64 frame_num = m_tracking_exporter ? m_tracking_exporter->getFrameCount() : 0;
+	LocalPlayer *dump_player = client->getEnv().getLocalPlayer();
+	static bool dataset_ready = false;
+	if (!dataset_ready && dump_player && dump_player->touching_ground) {
+		dataset_ready = true;
+		infostream << "[Dataset] Player on ground, starting capture at frame " << frame_num << std::endl;
+	}
+	if (dataset_ready && m_frame_dumper && m_frame_dumper->isActive() && m_frame_dumper->shouldDumpFrame(frame_num)) {
+
+		// Write content map on first frame
+		if (m_frame_dumper->framesDumped() == 0) {
+			if (m_semantic_segmenter) {
+				std::string content_json = m_semantic_segmenter->buildContentMapJSON(client->ndef());
+				m_frame_dumper->writeContentMap(content_json);
+			}
+		}
+
+		// Dump RGB frame
+		if (m_tracking_exporter) {
+			const u8 *rgb = m_tracking_exporter->getRGBPixelBuffer();
+			u32 w = m_tracking_exporter->getFrameWidth();
+			u32 h = m_tracking_exporter->getFrameHeight();
+			if (rgb && w > 0 && h > 0) {
+				m_frame_dumper->dumpRGBFrame(rgb, w, h, frame_num);
+			}
+		}
+
+		// Capture and dump semantic segmentation
+		// Prefer GPU render pass (full resolution) over CPU raycast
+		DrawSemanticMap *gpu_sem = DrawSemanticMap::getInstance();
+		if (gpu_sem && gpu_sem->hasData()) {
+			// GPU path: full-resolution semantic from FBO
+			u32 sw = gpu_sem->getWidth();
+			u32 sh = gpu_sem->getHeight();
+			const u8 *sem_rgb = gpu_sem->getPixels();
+
+			// Decode content_t from RGB encoding and build visualization
+			std::vector<content_t> content_ids(sw * sh);
+			std::vector<u8> vis_rgb(sw * sh * 3);
+			const NodeDefManager *ndef = client->ndef();
+
+			for (u32 i = 0; i < sw * sh; i++) {
+				u8 r = sem_rgb[i * 3 + 0];
+				u8 g = sem_rgb[i * 3 + 1];
+				content_t cid = (static_cast<content_t>(r) << 8) | g;
+				content_ids[i] = cid;
+
+				// Map to minimap_color for visualization
+				if (cid != CONTENT_AIR && cid != CONTENT_IGNORE && cid != 0) {
+					const ContentFeatures &f = ndef->get(cid);
+					video::SColor c = f.minimap_color;
+					vis_rgb[i * 3 + 0] = c.getRed();
+					vis_rgb[i * 3 + 1] = c.getGreen();
+					vis_rgb[i * 3 + 2] = c.getBlue();
+				} else {
+					vis_rgb[i * 3 + 0] = 0;
+					vis_rgb[i * 3 + 1] = 0;
+					vis_rgb[i * 3 + 2] = 0;
+				}
+			}
+
+			m_frame_dumper->dumpSemanticColor(vis_rgb.data(), sw, sh, frame_num);
+			m_frame_dumper->dumpSemanticRaw(content_ids.data(), sw, sh, frame_num);
+		} else if (m_semantic_segmenter && m_semantic_segmenter->isActive()) {
+			// CPU raycast fallback
+			m_semantic_segmenter->capture(camera, &client->getEnv(), client->ndef());
+
+			u32 gs = m_semantic_segmenter->getGridSize();
+			m_frame_dumper->dumpSemanticColor(
+				m_semantic_segmenter->getColorGrid().data(), gs, gs, frame_num);
+			m_frame_dumper->dumpSemanticRaw(
+				m_semantic_segmenter->getContentGrid().data(), gs, gs, frame_num);
+			m_frame_dumper->dumpDepth(
+				m_semantic_segmenter->getDepthGrid().data(), gs, gs, frame_num);
+			m_frame_dumper->dumpInstanceIDs(
+				m_semantic_segmenter->getInstanceGrid().data(), gs, gs, frame_num);
+		}
+
+		// Dump metadata
+		LocalPlayer *ds_player = client->getEnv().getLocalPlayer();
+		if (ds_player) {
+			v3f pos = ds_player->getPosition();
+			u64 timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+			m_frame_dumper->writeFrameMetadata(frame_num, timestamp_us,
+				pos.X, pos.Y, pos.Z, ds_player->getYaw(), ds_player->getPitch());
+		}
+
+		// Auto-shutdown when max frames reached
+		if (m_frame_dumper->isFinished()) {
+			infostream << "[Dataset] Max frames reached, requesting shutdown" << std::endl;
+			g_gamecallback->exitToOS();
 		}
 	}
 #endif

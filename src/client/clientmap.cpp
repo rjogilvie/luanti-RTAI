@@ -1396,6 +1396,43 @@ void ClientMap::renderPostFx(CameraMode cam_mode)
 	}
 }
 
+#ifdef ENABLE_TRACKING_EXPORT
+void ClientMap::renderSemanticMap(video::IVideoDriver *driver)
+{
+	const auto mesh_grid = m_client->getMeshGrid();
+	auto is_frustum_culled = m_client->getCamera()->getFrustumCuller();
+
+	for (auto &i : m_drawlist) {
+		MapBlock *block = i.second;
+		MapBlockMesh *block_mesh = block->mesh;
+		if (!block_mesh)
+			continue;
+
+		scene::IMesh *sem = block_mesh->getSemanticMesh();
+		if (!sem)
+			continue;
+
+		// Frustum culling (same as renderMap)
+		v3f sphere_center = intToFloat(block->getPosRelative(), BS)
+			+ block_mesh->getBoundingSphereCenter();
+		if (is_frustum_culled(sphere_center, block_mesh->getBoundingRadius()))
+			continue;
+
+		v3f wpos = intToFloat(mesh_grid.getMeshPos(i.first) * MAP_BLOCKSIZE
+			- m_camera_offset, BS);
+		core::matrix4 m;
+		m.setTranslation(wpos);
+		driver->setTransform(video::ETS_WORLD, m);
+
+		for (u32 b = 0; b < sem->getMeshBufferCount(); b++) {
+			scene::IMeshBuffer *buf = sem->getMeshBuffer(b);
+			driver->setMaterial(buf->getMaterial());
+			driver->drawMeshBuffer(buf);
+		}
+	}
+}
+#endif
+
 void ClientMap::PrintInfo(std::ostream &out)
 {
 	out<<"ClientMap: ";
