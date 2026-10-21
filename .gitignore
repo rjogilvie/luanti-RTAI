@@ -140,4 +140,4 @@ lib/irrlichtmt
 client/mod_storage.sqlite
 
 # Dataset generation output
-/dataset_output/
+/dataset_output
