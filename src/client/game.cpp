@@ -1005,6 +1005,10 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 
 		if (initialized) {
 			infostream << "[Tracking] ✓ Tracking export initialized successfully" << std::endl;
+			if (g_settings->getBool("tracking_hide_hud")) {
+				m_game_ui->m_flags.show_hud = false;
+				m_game_ui->m_flags.show_chat = false;
+			}
 		} else {
 			errorstream << "[Tracking] ✗ Failed to initialize tracking export" << std::endl;
 			m_tracking_exporter.reset();
@@ -1134,6 +1138,15 @@ void Game::run()
 		processUserInput(dtime);
 		// Update camera before player movement to avoid camera lag of one frame
 		updateCameraDirection(&cam_view_target, dtime);
+#ifdef ENABLE_TRACKING_EXPORT
+		// RL gaze commands rotate the camera here, before player control is
+		// built from cam_view; applied unsmoothed so saccades are ballistic
+		if (m_tracking_exporter && m_tracking_exporter->isActive() &&
+				m_tracking_exporter->applyCameraControl(
+					cam_view_target.camera_yaw, cam_view_target.camera_pitch)) {
+			cam_view = cam_view_target;
+		}
+#endif
 		cam_view.camera_yaw += (cam_view_target.camera_yaw -
 				cam_view.camera_yaw) * m_cache_cam_smoothing;
 		cam_view.camera_pitch += (cam_view_target.camera_pitch -
@@ -3961,14 +3974,6 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	TimeTaker tt_update("Game::updateFrame()");
 	LocalPlayer *player = client->getEnv().getLocalPlayer();
 
-	/*
-		Apply camera control from tracking export (if enabled)
-	*/
-
-	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
-		m_tracking_exporter->applyCameraControl(player);
-	}
-
 #ifdef ENABLE_TRACKING_EXPORT
 	/*
 		Process target control commands from tracking export
@@ -4286,12 +4291,13 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 	}
 #endif
 
-	this->driver->endScene();
-
 #ifdef ENABLE_TRACKING_EXPORT
-	// Export framebuffer for RL pipeline (after rendering is complete)
+	// Export framebuffer for RL pipeline and dataset mode. This must happen
+	// before endScene(): screenshots read the back buffer, which no longer
+	// holds this frame after the buffer swap (captures were one frame stale).
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
-		m_tracking_exporter->exportFramebuffer(this->driver);
+		// Register this frame's rewards before exporting it, so the frame's
+		// reward stamp carries them (target rewards come from renderTargets above)
 
 		// Register survival reward (dense, every frame)
 		constexpr float k_survival = 0.01f;
@@ -4317,8 +4323,14 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 				previous_hp = current_hp;
 			}
 		}
-	}
 
+		m_tracking_exporter->exportFramebuffer(this->driver);
+	}
+#endif
+
+	this->driver->endScene();
+
+#ifdef ENABLE_TRACKING_EXPORT
 	// Dataset mode: dump frames, semantic masks, and metadata
 	// Wait until player is on the ground before starting capture
 	u64 frame_num = m_tracking_exporter ? m_tracking_exporter->getFrameCount() : 0;

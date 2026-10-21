@@ -8,6 +8,8 @@
 #include "log.h"
 
 #include <IVideoDriver.h>
+#include <algorithm>
+#include <deque>
 #include <memory>
 #include <vector>
 #include <chrono>
@@ -22,6 +24,7 @@
 #include "network_transport.h"
 #include "target_control.h"
 #include "reward_signal.h"
+#include "reward_protocol.h"
 #endif
 
 namespace tracking {
@@ -54,9 +57,16 @@ struct TrackingExporter::Impl {
 	bool network_mode = false;  // false = local (shared memory), true = network
 
 	// Reward storage (network mode)
-	std::vector<RewardInfo> reward_history;
+	std::deque<RewardInfo> reward_history;
 	float cumulative_reward = 0.0f;
 	uint64_t reward_count = 0;
+
+	// Per-frame reward stamp, sent ahead of each frame in network mode.
+	// stamp_cumulative_reward is a double so 0.01 steps stay exact over long runs.
+	std::vector<network::RewardSourceTotal> pending_sources;
+	float pending_frame_reward = 0.0f;
+	double stamp_cumulative_reward = 0.0;
+	uint32_t last_applied_action_seq = 0;  // GazeCommand::sequence_number of the last action received
 #endif
 	bool active = false;
 	uint32_t current_session_id = 0;
@@ -348,6 +358,21 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 			}
 		}
 
+		// Send this frame's reward stamp first, so the receiver has it when the
+		// frame completes. Pending rewards are cleared even if the send fails;
+		// the cumulative total keeps the receiver's step rewards exact.
+		network::FrameRewardStamp stamp;
+		stamp.frame_sequence = frame.sequence_number;
+		stamp.last_action_seq = m_impl->last_applied_action_seq;
+		stamp.producer_session_id = m_impl->current_session_id;
+		stamp.timestamp_us = frame.timestamp_us;
+		stamp.cumulative_reward = m_impl->stamp_cumulative_reward;
+		stamp.frame_reward = m_impl->pending_frame_reward;
+		stamp.sources = std::move(m_impl->pending_sources);
+		m_impl->pending_sources.clear();
+		m_impl->pending_frame_reward = 0.0f;
+		m_impl->frame_producer->SendFrameRewards(stamp);
+
 		// Send frame via P2P connection to paired receiver
 		bool send_result = m_impl->frame_producer->SendFrame(frame);
 
@@ -470,10 +495,10 @@ bool CheckTargetAcquisition(float target_x, float target_y,
 
 } // anonymous namespace
 
-bool TrackingExporter::applyCameraControl(LocalPlayer* player)
+bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch)
 {
 #ifdef ENABLE_TRACKING_EXPORT
-	if (!m_impl->active || !player)
+	if (!m_impl->active)
 		return false;
 
 	// Network mode: poll action from FrameProducer
@@ -489,6 +514,9 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 
 	const GazeCommand& cmd = *cmd_opt;
 
+	// Frames rendered from now on reflect this action (reported in reward stamps)
+	m_impl->last_applied_action_seq = cmd.sequence_number;
+
 	// Update statistics
 	m_action_stats.actions_received++;
 
@@ -500,8 +528,10 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 	m_action_stats.last_action_time_us = receive_time_us;
 
 	// Get current camera state
-	float current_yaw = player->getYaw();
-	float current_pitch = player->getPitch();
+	float current_yaw = camera_yaw;
+	float current_pitch = camera_pitch;
+	float new_yaw = current_yaw;
+	float new_pitch = current_pitch;
 
 	// Apply command based on type
 	bool applied = false;
@@ -511,16 +541,17 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 			// Convert viewport coordinates (0-256) to camera angles
 			// Viewport center (128, 128) = current look direction (0, 0)
 			// Positive X = right, Positive Y = down
+			// Luanti: yaw decreases turning right, positive pitch looks down
 
 			float dx = cmd.target_x - 128.0f;  // Pixels from center
 			float dy = cmd.target_y - 128.0f;
 
 			// Convert to degrees (rough approximation: 1 pixel ≈ 0.5 degrees)
-			float yaw_delta = dx * 0.5f;
-			float pitch_delta = -dy * 0.5f;  // Invert Y axis
+			float yaw_delta = -dx * 0.5f;
+			float pitch_delta = dy * 0.5f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
@@ -528,11 +559,11 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 		case CMD_PURSUIT: {
 			// Smooth tracking with velocity
 			// Use velocity to predict where to look
-			float yaw_delta = cmd.velocity_x * 0.5f;
-			float pitch_delta = -cmd.velocity_y * 0.5f;
+			float yaw_delta = -cmd.velocity_x * 0.5f;
+			float pitch_delta = cmd.velocity_y * 0.5f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
@@ -544,11 +575,11 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 			float dy = cmd.target_y - 128.0f;
 
 			// Apply small correction (scaled down for stability)
-			float yaw_delta = dx * 0.1f;
-			float pitch_delta = -dy * 0.1f;
+			float yaw_delta = -dx * 0.1f;
+			float pitch_delta = dy * 0.1f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
@@ -559,19 +590,19 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 			float dx = cmd.target_x - 128.0f;
 			float dy = cmd.target_y - 128.0f;
 
-			float yaw_delta = dx * 0.05f;
-			float pitch_delta = -dy * 0.05f;
+			float yaw_delta = -dx * 0.05f;
+			float pitch_delta = dy * 0.05f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
 
 		case CMD_RESET: {
 			// Return to center (0, 0)
-			player->setYaw(0.0f);
-			player->setPitch(0.0f);
+			new_yaw = 0.0f;
+			new_pitch = 0.0f;
 			applied = true;
 			break;
 		}
@@ -583,6 +614,8 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 	}
 
 	if (applied) {
+		camera_yaw = new_yaw;
+		camera_pitch = std::max(-90.0f, std::min(90.0f, new_pitch));
 		m_action_stats.actions_applied++;
 	} else {
 		m_action_stats.actions_failed++;
@@ -619,12 +652,20 @@ void TrackingExporter::registerRewardEvent(const std::string& event_type, float 
 		// Store in history (keep last 1000 rewards to avoid memory growth)
 		m_impl->reward_history.push_back(reward);
 		if (m_impl->reward_history.size() > 1000) {
-			m_impl->reward_history.erase(m_impl->reward_history.begin());
+			m_impl->reward_history.pop_front();
 		}
 
-		// TODO: Network reward sending would go here
-		// For now, rewards are only logged locally
-		// Could integrate with FrameProducer session or separate TCP connection
+		// Accumulate into the next frame's reward stamp (sent in exportFramebuffer)
+		m_impl->stamp_cumulative_reward += reward_value;
+		m_impl->pending_frame_reward += reward_value;
+		auto src_it = std::find_if(m_impl->pending_sources.begin(), m_impl->pending_sources.end(),
+			[&event_type](const network::RewardSourceTotal &s) { return s.source == event_type; });
+		if (src_it == m_impl->pending_sources.end()) {
+			m_impl->pending_sources.push_back({event_type, reward_value, 1});
+		} else {
+			src_it->reward += reward_value;
+			src_it->count++;
+		}
 
 		// Log periodically (every 100 rewards)
 		if (m_impl->reward_count % 100 == 1) {

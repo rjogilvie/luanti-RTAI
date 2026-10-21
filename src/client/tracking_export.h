@@ -117,14 +117,20 @@ public:
 
 	/**
 	 * Apply camera control from UDP network
-	 * Receives camera state (yaw/pitch) and applies directly to player
+	 * Polls one gaze command and applies it to the camera orientation
 	 * Used for RL agent camera control in network mode
-	 * Called each frame before rendering
+	 * Called each frame after input processing, before player control is
+	 * built from the camera orientation (so the command is not overwritten)
 	 *
-	 * @param player Local player instance to control
-	 * @return true if camera state was applied
+	 * Viewport coordinates: (128,128) is the current look direction; a target
+	 * to the right/below turns the camera right/down (Luanti: yaw decreases
+	 * to the right, positive pitch looks down)
+	 *
+	 * @param camera_yaw   Camera yaw in degrees (modified in place)
+	 * @param camera_pitch Camera pitch in degrees (modified in place)
+	 * @return true if a command was applied
 	 */
-	bool applyCameraControl(LocalPlayer* player);
+	bool applyCameraControl(float &camera_yaw, float &camera_pitch);
 
 	/**
 	 * Register a reward event from game logic
