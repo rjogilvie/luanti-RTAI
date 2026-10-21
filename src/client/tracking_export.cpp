@@ -8,6 +8,8 @@
 #include "log.h"
 
 #include <IVideoDriver.h>
+#include <algorithm>
+#include <deque>
 #include <memory>
 #include <vector>
 #include <chrono>
@@ -22,6 +24,7 @@
 #include "network_transport.h"
 #include "target_control.h"
 #include "reward_signal.h"
+#include "reward_protocol.h"
 #endif
 
 namespace tracking {
@@ -54,9 +57,16 @@ struct TrackingExporter::Impl {
 	bool network_mode = false;  // false = local (shared memory), true = network
 
 	// Reward storage (network mode)
-	std::vector<RewardInfo> reward_history;
+	std::deque<RewardInfo> reward_history;
 	float cumulative_reward = 0.0f;
 	uint64_t reward_count = 0;
+
+	// Per-frame reward stamp, sent ahead of each frame in network mode.
+	// stamp_cumulative_reward is a double so 0.01 steps stay exact over long runs.
+	std::vector<network::RewardSourceTotal> pending_sources;
+	float pending_frame_reward = 0.0f;
+	double stamp_cumulative_reward = 0.0;
+	uint32_t last_applied_action_seq = 0;  // GazeCommand::sequence_number of the last action received
 #endif
 	bool active = false;
 	uint32_t current_session_id = 0;
@@ -348,6 +358,21 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 			}
 		}
 
+		// Send this frame's reward stamp first, so the receiver has it when the
+		// frame completes. Pending rewards are cleared even if the send fails;
+		// the cumulative total keeps the receiver's step rewards exact.
+		network::FrameRewardStamp stamp;
+		stamp.frame_sequence = frame.sequence_number;
+		stamp.last_action_seq = m_impl->last_applied_action_seq;
+		stamp.producer_session_id = m_impl->current_session_id;
+		stamp.timestamp_us = frame.timestamp_us;
+		stamp.cumulative_reward = m_impl->stamp_cumulative_reward;
+		stamp.frame_reward = m_impl->pending_frame_reward;
+		stamp.sources = std::move(m_impl->pending_sources);
+		m_impl->pending_sources.clear();
+		m_impl->pending_frame_reward = 0.0f;
+		m_impl->frame_producer->SendFrameRewards(stamp);
+
 		// Send frame via P2P connection to paired receiver
 		bool send_result = m_impl->frame_producer->SendFrame(frame);
 
@@ -489,6 +514,9 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 
 	const GazeCommand& cmd = *cmd_opt;
 
+	// Frames rendered from now on reflect this action (reported in reward stamps)
+	m_impl->last_applied_action_seq = cmd.sequence_number;
+
 	// Update statistics
 	m_action_stats.actions_received++;
 
@@ -619,12 +647,20 @@ void TrackingExporter::registerRewardEvent(const std::string& event_type, float 
 		// Store in history (keep last 1000 rewards to avoid memory growth)
 		m_impl->reward_history.push_back(reward);
 		if (m_impl->reward_history.size() > 1000) {
-			m_impl->reward_history.erase(m_impl->reward_history.begin());
+			m_impl->reward_history.pop_front();
 		}
 
-		// TODO: Network reward sending would go here
-		// For now, rewards are only logged locally
-		// Could integrate with FrameProducer session or separate TCP connection
+		// Accumulate into the next frame's reward stamp (sent in exportFramebuffer)
+		m_impl->stamp_cumulative_reward += reward_value;
+		m_impl->pending_frame_reward += reward_value;
+		auto src_it = std::find_if(m_impl->pending_sources.begin(), m_impl->pending_sources.end(),
+			[&event_type](const network::RewardSourceTotal &s) { return s.source == event_type; });
+		if (src_it == m_impl->pending_sources.end()) {
+			m_impl->pending_sources.push_back({event_type, reward_value, 1});
+		} else {
+			src_it->reward += reward_value;
+			src_it->count++;
+		}
 
 		// Log periodically (every 100 rewards)
 		if (m_impl->reward_count % 100 == 1) {

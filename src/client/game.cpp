@@ -4291,7 +4291,8 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 #ifdef ENABLE_TRACKING_EXPORT
 	// Export framebuffer for RL pipeline (after rendering is complete)
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
-		m_tracking_exporter->exportFramebuffer(this->driver);
+		// Register this frame's rewards before exporting it, so the frame's
+		// reward stamp carries them (target rewards come from renderTargets above)
 
 		// Register survival reward (dense, every frame)
 		constexpr float k_survival = 0.01f;
@@ -4317,6 +4318,8 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 				previous_hp = current_hp;
 			}
 		}
+
+		m_tracking_exporter->exportFramebuffer(this->driver);
 	}
 
 	// Dataset mode: dump frames, semantic masks, and metadata
