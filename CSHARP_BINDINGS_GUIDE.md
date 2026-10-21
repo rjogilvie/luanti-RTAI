@@ -540,5 +540,5 @@ while (training) {
 
 - C++/CLI Documentation: https://learn.microsoft.com/en-us/cpp/dotnet/
 - P/Invoke Tutorial: https://learn.microsoft.com/en-us/dotnet/standard/native-interop/pinvoke
-- NetworkClient C++ Header: `/home/robert/CodeProjects/visionlearningpipeline/core/include/network_client.h`
-- Luanti Integration: `/home/robert/CodeProjects/luanti-tracking/NETWORK_MODE.md`
+- NetworkClient C++ Header: `<repo>/visionlearningpipeline/core/include/network_client.h`
+- Luanti Integration: `<repo>/luanti-tracking/NETWORK_MODE.md`

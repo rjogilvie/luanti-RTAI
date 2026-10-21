@@ -1,5 +1,7 @@
 # Luanti Network Tracking Mode
 
+> **⚠️ Historical (Oct 2025).** The UDP broadcast path described here was replaced on **2025-11-08** by FrameProducer P2P (`tracking_mode = network` now connects to a NetworkServer control plane on TCP 7001). Local shared-memory mode still exists. See [RTAI_FORK.md](RTAI_FORK.md) for the current feature set.
+
 ## Overview
 
 Luanti now supports dual-mode tracking export for RL training:
@@ -29,7 +31,7 @@ sudo apt-get install -y \
 ### 2. Build Luanti
 
 ```bash
-cd /home/robert/CodeProjects/luanti-tracking/build
+cd <repo>/luanti-tracking/build
 cmake .. -DENABLE_TRACKING_EXPORT=ON -DBUILD_SERVER=OFF -DENABLE_SOUND=OFF -DENABLE_GETTEXT=OFF
 make -j$(nproc)
 ```
@@ -37,7 +39,7 @@ make -j$(nproc)
 ### 3. Build Vision Learning Pipeline
 
 ```bash
-cd /home/robert/CodeProjects/visionlearningpipeline/build
+cd <repo>/visionlearningpipeline/build
 cmake ..
 make -j$(nproc)
 ```
@@ -111,11 +113,11 @@ To use them:
 
 ```bash
 # Terminal 1: Launch Luanti
-cd /home/robert/CodeProjects/luanti-tracking
+cd <repo>/luanti-tracking
 ./bin/luanti --config luanti_local.conf
 
 # Terminal 2: Run tracker (shared memory)
-cd /home/robert/CodeProjects/visionlearningpipeline/build
+cd <repo>/visionlearningpipeline/build
 ./minetest_real_test  # Uses shared memory
 ```
 
@@ -123,13 +125,13 @@ cd /home/robert/CodeProjects/visionlearningpipeline/build
 
 **Terminal 1 - Launch Luanti:**
 ```bash
-cd /home/robert/CodeProjects/luanti-tracking
+cd <repo>/luanti-tracking
 ./bin/luanti --config luanti_network.conf
 ```
 
 **Terminal 2 - Run Frame Receiver:**
 ```bash
-cd /home/robert/CodeProjects/visionlearningpipeline/build
+cd <repo>/visionlearningpipeline/build
 ./udp_frame_receiver --port 8000
 ```
 
@@ -150,14 +152,14 @@ Total data:      8.35636 MB
 
 **Server Machine (Running Luanti):**
 ```bash
-cd /home/robert/CodeProjects/luanti-tracking
+cd <repo>/luanti-tracking
 # Edit luanti_network.conf: tracking_broadcast_addr = 255.255.255.255
 ./bin/luanti --config luanti_network.conf
 ```
 
 **Client Machine (Receiving Frames):**
 ```bash
-cd /home/robert/CodeProjects/visionlearningpipeline/build
+cd <repo>/visionlearningpipeline/build
 ./udp_frame_receiver --port 8000 --bind 0.0.0.0
 ```
 
@@ -172,7 +174,7 @@ You can connect multiple clients to the same Luanti instance:
 
 ```bash
 # Server
-cd /home/robert/CodeProjects/luanti-tracking
+cd <repo>/luanti-tracking
 ./bin/luanti --config luanti_network.conf
 
 # Client 1 (Machine A)
@@ -420,7 +422,7 @@ chunk_data(compressed_data) → 60 UDP packets of 1440 bytes
 For testing network broadcast mode (255.255.255.255) without multiple physical machines, use the Docker test environment:
 
 ```bash
-cd /home/robert/CodeProjects/luanti-tracking/docker-test
+cd <repo>/luanti-tracking/docker-test
 
 # Build images (first time only, ~15 minutes)
 ./test.sh build
