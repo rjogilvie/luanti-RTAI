@@ -4286,10 +4286,10 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 	}
 #endif
 
-	this->driver->endScene();
-
 #ifdef ENABLE_TRACKING_EXPORT
-	// Export framebuffer for RL pipeline (after rendering is complete)
+	// Export framebuffer for RL pipeline and dataset mode. This must happen
+	// before endScene(): screenshots read the back buffer, which no longer
+	// holds this frame after the buffer swap (captures were one frame stale).
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
 		// Register this frame's rewards before exporting it, so the frame's
 		// reward stamp carries them (target rewards come from renderTargets above)
@@ -4321,7 +4321,11 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 
 		m_tracking_exporter->exportFramebuffer(this->driver);
 	}
+#endif
 
+	this->driver->endScene();
+
+#ifdef ENABLE_TRACKING_EXPORT
 	// Dataset mode: dump frames, semantic masks, and metadata
 	// Wait until player is on the ground before starting capture
 	u64 frame_num = m_tracking_exporter ? m_tracking_exporter->getFrameCount() : 0;
