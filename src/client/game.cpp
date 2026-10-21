@@ -1134,6 +1134,15 @@ void Game::run()
 		processUserInput(dtime);
 		// Update camera before player movement to avoid camera lag of one frame
 		updateCameraDirection(&cam_view_target, dtime);
+#ifdef ENABLE_TRACKING_EXPORT
+		// RL gaze commands rotate the camera here, before player control is
+		// built from cam_view; applied unsmoothed so saccades are ballistic
+		if (m_tracking_exporter && m_tracking_exporter->isActive() &&
+				m_tracking_exporter->applyCameraControl(
+					cam_view_target.camera_yaw, cam_view_target.camera_pitch)) {
+			cam_view = cam_view_target;
+		}
+#endif
 		cam_view.camera_yaw += (cam_view_target.camera_yaw -
 				cam_view.camera_yaw) * m_cache_cam_smoothing;
 		cam_view.camera_pitch += (cam_view_target.camera_pitch -
@@ -3960,14 +3969,6 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	ZoneScoped;
 	TimeTaker tt_update("Game::updateFrame()");
 	LocalPlayer *player = client->getEnv().getLocalPlayer();
-
-	/*
-		Apply camera control from tracking export (if enabled)
-	*/
-
-	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
-		m_tracking_exporter->applyCameraControl(player);
-	}
 
 #ifdef ENABLE_TRACKING_EXPORT
 	/*

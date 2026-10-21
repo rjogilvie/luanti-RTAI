@@ -495,10 +495,10 @@ bool CheckTargetAcquisition(float target_x, float target_y,
 
 } // anonymous namespace
 
-bool TrackingExporter::applyCameraControl(LocalPlayer* player)
+bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch)
 {
 #ifdef ENABLE_TRACKING_EXPORT
-	if (!m_impl->active || !player)
+	if (!m_impl->active)
 		return false;
 
 	// Network mode: poll action from FrameProducer
@@ -528,8 +528,10 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 	m_action_stats.last_action_time_us = receive_time_us;
 
 	// Get current camera state
-	float current_yaw = player->getYaw();
-	float current_pitch = player->getPitch();
+	float current_yaw = camera_yaw;
+	float current_pitch = camera_pitch;
+	float new_yaw = current_yaw;
+	float new_pitch = current_pitch;
 
 	// Apply command based on type
 	bool applied = false;
@@ -539,16 +541,17 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 			// Convert viewport coordinates (0-256) to camera angles
 			// Viewport center (128, 128) = current look direction (0, 0)
 			// Positive X = right, Positive Y = down
+			// Luanti: yaw decreases turning right, positive pitch looks down
 
 			float dx = cmd.target_x - 128.0f;  // Pixels from center
 			float dy = cmd.target_y - 128.0f;
 
 			// Convert to degrees (rough approximation: 1 pixel ≈ 0.5 degrees)
-			float yaw_delta = dx * 0.5f;
-			float pitch_delta = -dy * 0.5f;  // Invert Y axis
+			float yaw_delta = -dx * 0.5f;
+			float pitch_delta = dy * 0.5f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
@@ -556,11 +559,11 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 		case CMD_PURSUIT: {
 			// Smooth tracking with velocity
 			// Use velocity to predict where to look
-			float yaw_delta = cmd.velocity_x * 0.5f;
-			float pitch_delta = -cmd.velocity_y * 0.5f;
+			float yaw_delta = -cmd.velocity_x * 0.5f;
+			float pitch_delta = cmd.velocity_y * 0.5f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
@@ -572,11 +575,11 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 			float dy = cmd.target_y - 128.0f;
 
 			// Apply small correction (scaled down for stability)
-			float yaw_delta = dx * 0.1f;
-			float pitch_delta = -dy * 0.1f;
+			float yaw_delta = -dx * 0.1f;
+			float pitch_delta = dy * 0.1f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
@@ -587,19 +590,19 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 			float dx = cmd.target_x - 128.0f;
 			float dy = cmd.target_y - 128.0f;
 
-			float yaw_delta = dx * 0.05f;
-			float pitch_delta = -dy * 0.05f;
+			float yaw_delta = -dx * 0.05f;
+			float pitch_delta = dy * 0.05f;
 
-			player->setYaw(current_yaw + yaw_delta);
-			player->setPitch(current_pitch + pitch_delta);
+			new_yaw = current_yaw + yaw_delta;
+			new_pitch = current_pitch + pitch_delta;
 			applied = true;
 			break;
 		}
 
 		case CMD_RESET: {
 			// Return to center (0, 0)
-			player->setYaw(0.0f);
-			player->setPitch(0.0f);
+			new_yaw = 0.0f;
+			new_pitch = 0.0f;
 			applied = true;
 			break;
 		}
@@ -611,6 +614,8 @@ bool TrackingExporter::applyCameraControl(LocalPlayer* player)
 	}
 
 	if (applied) {
+		camera_yaw = new_yaw;
+		camera_pitch = std::max(-90.0f, std::min(90.0f, new_pitch));
 		m_action_stats.actions_applied++;
 	} else {
 		m_action_stats.actions_failed++;
