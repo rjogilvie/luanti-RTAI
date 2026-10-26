@@ -5,6 +5,12 @@
 #include "tracking_export.h"
 #include "localplayer.h"
 #include "client.h"
+#include "camera.h"
+#include "clientenvironment.h"
+#include "map.h"
+#include "nodedef.h"
+#include "constants.h"
+#include "util/numeric.h"
 #include "log.h"
 
 #include <IVideoDriver.h>
@@ -50,6 +56,14 @@ struct TrackingExporter::Impl {
 		float initial_x = 0.0f;
 		float initial_y = 0.0f;
 		bool was_acquired = false;  // Track if target was previously centered (for acquisition rewards)
+
+		// WORLD/VIEW anchors, in world node coordinates. Resolved on the first
+		// render (VIEW needs the camera); motion moves along axis_u/axis_v.
+		bool world_resolved = false;
+		v3f world_origin;
+		v3f world_current;
+		v3f axis_u;
+		v3f axis_v;
 	};
 	std::unordered_map<uint64_t, TargetState> target_states;
 
@@ -493,9 +507,147 @@ bool CheckTargetAcquisition(float target_x, float target_y,
 	return distance < acquisition_threshold;
 }
 
+#ifdef ENABLE_TRACKING_EXPORT
+// Whether a motion pattern moves the target on its own
+bool IsPatternMotion(network::TargetMotionPattern pattern)
+{
+	return pattern == network::MOTION_LINEAR ||
+		pattern == network::MOTION_CIRCULAR ||
+		pattern == network::MOTION_SINUSOIDAL;
+}
+
+// Displacement along the anchor's (u, v) motion axes after elapsed_sec
+v2f MotionOffset(const network::TargetMotion &motion, float elapsed_sec)
+{
+	switch (motion.pattern) {
+		case network::MOTION_LINEAR:
+			return v2f(motion.velocity_x * elapsed_sec, motion.velocity_y * elapsed_sec);
+
+		case network::MOTION_CIRCULAR: {
+			float angle = 2.0f * M_PI * motion.frequency * elapsed_sec + motion.phase;
+			return v2f(motion.amplitude * std::cos(angle), motion.amplitude * std::sin(angle));
+		}
+
+		case network::MOTION_SINUSOIDAL: {
+			float phase = 2.0f * M_PI * motion.frequency * elapsed_sec + motion.phase;
+			return v2f(motion.amplitude * std::sin(phase), 0.0f);
+		}
+
+		default:
+			return v2f(0.0f, 0.0f);
+	}
+}
+
+// True if a node that blocks light lies between eye and target (world nodes).
+// Same criterion as Map::isOccluded; the nodes at both ends are skipped so a
+// target placed inside or against a node stays visible.
+bool IsWorldTargetOccluded(Client *client, v3f eye, v3f target)
+{
+	constexpr float STEP = 0.25f;
+	constexpr float MAX_CHECK_DISTANCE = 256.0f;
+
+	v3f direction = target - eye;
+	float distance = std::min(direction.getLength(), MAX_CHECK_DISTANCE);
+	if (distance < 1.0f)
+		return false;
+	direction.normalize();
+
+	Map &map = client->getEnv().getMap();
+	const NodeDefManager *ndef = client->ndef();
+	for (float t = 0.5f; t < distance - 0.5f; t += STEP) {
+		bool is_valid_position = false;
+		MapNode node = map.getNode(floatToInt(eye + direction * t, 1.0f), &is_valid_position);
+		if (is_valid_position && !ndef->getLightingFlags(node).light_propagates)
+			return true;
+	}
+	return false;
+}
+
+// Draw one target marker centred on a screen position
+void DrawTargetMarker(video::IVideoDriver *driver, const network::TargetPacket &target,
+		int screen_x, int screen_y)
+{
+	// Create Irrlicht color from target appearance
+	video::SColor color(
+		target.appearance.alpha,
+		target.appearance.red,
+		target.appearance.green,
+		target.appearance.blue
+	);
+
+	// Render based on target type
+	switch (target.target_type) {
+		case network::TARGET_CIRCLE: {
+			// Draw circle as filled disk using small rectangles
+			int radius = static_cast<int>(target.appearance.size / 2.0f);
+			// Approximate circle with rectangles
+			for (int dy = -radius; dy <= radius; dy++) {
+				int width = static_cast<int>(std::sqrt(radius * radius - dy * dy));
+				if (width > 0) {
+					core::rect<s32> rect(
+						screen_x - width,
+						screen_y + dy,
+						screen_x + width,
+						screen_y + dy + 1
+					);
+					driver->draw2DRectangle(color, rect);
+				}
+			}
+			break;
+		}
+
+		case network::TARGET_SQUARE: {
+			// Draw filled square
+			int half_size = static_cast<int>(target.appearance.size / 2.0f);
+			core::rect<s32> rect(
+				screen_x - half_size,
+				screen_y - half_size,
+				screen_x + half_size,
+				screen_y + half_size
+			);
+			driver->draw2DRectangle(color, rect);
+			break;
+		}
+
+		case network::TARGET_CROSS: {
+			// Draw crosshair
+			int half_size = static_cast<int>(target.appearance.size / 2.0f);
+			int thickness = static_cast<int>(target.appearance.thickness);
+
+			// Horizontal line
+			core::rect<s32> h_line(
+				screen_x - half_size,
+				screen_y - thickness / 2,
+				screen_x + half_size,
+				screen_y + thickness / 2
+			);
+			driver->draw2DRectangle(color, h_line);
+
+			// Vertical line
+			core::rect<s32> v_line(
+				screen_x - thickness / 2,
+				screen_y - half_size,
+				screen_x + thickness / 2,
+				screen_y + half_size
+			);
+			driver->draw2DRectangle(color, v_line);
+			break;
+		}
+
+		case network::TARGET_ENTITY:
+			// Entity-based targets handled by Lua mod, not rendered here
+			break;
+
+		default:
+			break;
+	}
+}
+#endif
+
 } // anonymous namespace
 
-bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch)
+bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch,
+		float fov_x, float fov_y)
 {
 #ifdef ENABLE_TRACKING_EXPORT
 	if (!m_impl->active)
@@ -546,9 +698,11 @@ bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch
 			float dx = cmd.target_x - 128.0f;  // Pixels from center
 			float dy = cmd.target_y - 128.0f;
 
-			// Convert to degrees (rough approximation: 1 pixel ≈ 0.5 degrees)
-			float yaw_delta = -dx * 0.5f;
-			float pitch_delta = dy * 0.5f;
+			// Turn by the angle the pixel subtends through the perspective
+			// projection, so the saccade lands on what was drawn there
+			// (yaw and pitch are treated independently; exact on the axes)
+			float yaw_delta = -std::atan(dx / 128.0f * std::tan(fov_x / 2.0f)) * core::RADTODEG;
+			float pitch_delta = std::atan(dy / 128.0f * std::tan(fov_y / 2.0f)) * core::RADTODEG;
 
 			new_yaw = current_yaw + yaw_delta;
 			new_pitch = current_pitch + pitch_delta;
@@ -737,7 +891,7 @@ int TrackingExporter::processTargetCommands()
 	for (int i = 0; i < 10; i++) {
 		int received = m_impl->target_control_socket->ReceiveFrom(buffer, sizeof(buffer), sender);
 
-		if (received < static_cast<int>(network::TargetPacket::PACKET_SIZE)) {
+		if (received < static_cast<int>(network::TargetPacket::MIN_PACKET_SIZE)) {
 			break;  // No more packets or invalid size
 		}
 
@@ -766,7 +920,10 @@ int TrackingExporter::processTargetCommands()
 				m_impl->target_states[packet.target_id] = state;
 
 				infostream << "[Tracking] Target spawned: ID=" << packet.target_id
-				           << " at (" << packet.position_x << "," << packet.position_y << ")"
+				           << " at (" << packet.position_x << "," << packet.position_y;
+				if (packet.anchor != network::ANCHOR_SCREEN)
+					infostream << "," << packet.position_z;
+				infostream << ") anchor=" << network::GetTargetAnchorName(packet.anchor)
 				           << " type=" << network::GetTargetTypeName(packet.target_type) << std::endl;
 				break;
 			}
@@ -776,6 +933,8 @@ int TrackingExporter::processTargetCommands()
 				auto it = m_impl->active_targets.find(packet.target_id);
 				if (it != m_impl->active_targets.end()) {
 					it->second = packet;
+					// A world target's new position is re-resolved on the next render
+					m_impl->target_states[packet.target_id].world_resolved = false;
 				}
 				break;
 			}
@@ -801,7 +960,16 @@ int TrackingExporter::processTargetCommands()
 						now.time_since_epoch()).count();
 					state.initial_x = it->second.position_x;
 					state.initial_y = it->second.position_y;
+					// World targets start the new pattern from where they are now
+					state.world_origin = state.world_current;
 				}
+				break;
+			}
+
+			case network::TARGET_CMD_CLEAR: {
+				m_impl->active_targets.clear();
+				m_impl->target_states.clear();
+				infostream << "[Tracking] All targets cleared" << std::endl;
 				break;
 			}
 
@@ -820,7 +988,7 @@ int TrackingExporter::processTargetCommands()
 #endif
 }
 
-void TrackingExporter::renderTargets(video::IVideoDriver* driver)
+void TrackingExporter::renderTargets(video::IVideoDriver* driver, Camera* camera, Client* client)
 {
 #ifdef ENABLE_TRACKING_EXPORT
 	if (!m_impl->active || !driver || m_impl->active_targets.empty()) {
@@ -832,169 +1000,129 @@ void TrackingExporter::renderTargets(video::IVideoDriver* driver)
 	uint64_t current_time_us = std::chrono::duration_cast<std::chrono::microseconds>(
 		now.time_since_epoch()).count();
 
+	// Camera state for WORLD/VIEW targets (all positions in world nodes)
+	scene::ICameraSceneNode *cam_node = camera ? camera->getCameraNode() : nullptr;
+	core::matrix4 view_projection;
+	v3f camera_offset, eye, forward, right, up;
+	if (cam_node) {
+		view_projection = cam_node->getProjectionMatrix();
+		view_projection *= cam_node->getViewMatrix();
+		camera_offset = intToFloat(camera->getOffset(), BS);
+		eye = (cam_node->getAbsolutePosition() + camera_offset) / BS;
+		forward = (cam_node->getTarget() - cam_node->getAbsolutePosition()).normalize();
+		right = cam_node->getUpVector().crossProduct(forward).normalize();
+		up = forward.crossProduct(right);
+	}
+	const v2u32 screen_size = driver->getScreenSize();
+
 	// Update and render each target
 	for (auto& pair : m_impl->active_targets) {
 		uint64_t target_id = pair.first;
 		network::TargetPacket& target = pair.second;
-		const auto& state_it = m_impl->target_states.find(target_id);
+		auto state_it = m_impl->target_states.find(target_id);
 
 		if (state_it == m_impl->target_states.end()) {
 			continue;  // No state for this target
 		}
 
-		const Impl::TargetState& state = state_it->second;
+		Impl::TargetState& state = state_it->second;
+		float elapsed_sec = (current_time_us - state.start_time_us) / 1000000.0f;
 
-		// Update position based on motion pattern
-		float render_x = target.position_x;
-		float render_y = target.position_y;
+		// Viewport position (0-256, centre 128,128) used for the reward, and
+		// whether the target is in front of the camera at all
+		float render_x = 0.0f;
+		float render_y = 0.0f;
+		bool in_front = true;
 
-		if (target.motion.pattern != network::MOTION_STATIC) {
-			float elapsed_sec = (current_time_us - state.start_time_us) / 1000000.0f;
+		if (target.anchor == network::ANCHOR_SCREEN) {
+			// Update position based on motion pattern
+			render_x = target.position_x;
+			render_y = target.position_y;
 
-			switch (target.motion.pattern) {
-				case network::MOTION_LINEAR: {
-					render_x = state.initial_x + target.motion.velocity_x * elapsed_sec;
-					render_y = state.initial_y + target.motion.velocity_y * elapsed_sec;
-					break;
-				}
+			if (IsPatternMotion(target.motion.pattern)) {
+				v2f offset = MotionOffset(target.motion, elapsed_sec);
+				render_x = state.initial_x + offset.X;
+				render_y = state.initial_y + offset.Y;
 
-				case network::MOTION_CIRCULAR: {
-					float angle = 2.0f * M_PI * target.motion.frequency * elapsed_sec + target.motion.phase;
-					render_x = state.initial_x + target.motion.amplitude * std::cos(angle);
-					render_y = state.initial_y + target.motion.amplitude * std::sin(angle);
-					break;
-				}
-
-				case network::MOTION_SINUSOIDAL: {
-					float phase = 2.0f * M_PI * target.motion.frequency * elapsed_sec + target.motion.phase;
-					render_x = state.initial_x + target.motion.amplitude * std::sin(phase);
-					render_y = state.initial_y;
-					break;
-				}
-
-				case network::MOTION_RANDOM:
-					// Random walk would require storing random state - skip for now
-					break;
-
-				case network::MOTION_CUSTOM:
-					// Use position from packet directly
-					break;
-
-				default:
-					break;
+				// Update target position for next frame
+				target.position_x = render_x;
+				target.position_y = render_y;
 			}
 
-			// Update target position for next frame
-			target.position_x = render_x;
-			target.position_y = render_y;
-		}
+			// Clamp to viewport bounds (0-256)
+			render_x = std::max(0.0f, std::min(256.0f, render_x));
+			render_y = std::max(0.0f, std::min(256.0f, render_y));
 
-		// Clamp to viewport bounds (0-256)
-		render_x = std::max(0.0f, std::min(256.0f, render_x));
-		render_y = std::max(0.0f, std::min(256.0f, render_y));
+			// Viewport is rendered in top-left corner at 256x256
+			DrawTargetMarker(driver, target,
+				static_cast<int>(render_x), static_cast<int>(render_y));
+		} else {
+			if (!cam_node)
+				continue;
 
-		// Convert viewport coordinates (0-256) to screen coordinates
-		// Viewport is rendered in top-left corner at 256x256
-		int screen_x = static_cast<int>(render_x);
-		int screen_y = static_cast<int>(render_y);
-
-		// Create Irrlicht color from target appearance
-		video::SColor color(
-			target.appearance.alpha,
-			target.appearance.red,
-			target.appearance.green,
-			target.appearance.blue
-		);
-
-		// Render based on target type
-		switch (target.target_type) {
-			case network::TARGET_CIRCLE: {
-				// Draw circle as filled disk using small rectangles
-				int radius = static_cast<int>(target.appearance.size / 2.0f);
-				// Approximate circle with rectangles
-				for (int dy = -radius; dy <= radius; dy++) {
-					int width = static_cast<int>(std::sqrt(radius * radius - dy * dy));
-					if (width > 0) {
-						core::rect<s32> rect(
-							screen_x - width,
-							screen_y + dy,
-							screen_x + width,
-							screen_y + dy + 1
-						);
-						driver->draw2DRectangle(color, rect);
-					}
+			if (!state.world_resolved) {
+				v3f position(target.position_x, target.position_y, target.position_z);
+				if (target.anchor == network::ANCHOR_VIEW) {
+					state.world_origin = eye + right * position.X + up * position.Y + forward * position.Z;
+					state.axis_u = right;
+					state.axis_v = up;
+				} else {
+					state.world_origin = position;
+					state.axis_u = v3f(1.0f, 0.0f, 0.0f);
+					state.axis_v = v3f(0.0f, 1.0f, 0.0f);
 				}
-				break;
+				state.world_resolved = true;
 			}
 
-			case network::TARGET_SQUARE: {
-				// Draw filled square
-				int half_size = static_cast<int>(target.appearance.size / 2.0f);
-				core::rect<s32> rect(
-					screen_x - half_size,
-					screen_y - half_size,
-					screen_x + half_size,
-					screen_y + half_size
-				);
-				driver->draw2DRectangle(color, rect);
-				break;
+			v3f world_pos = state.world_origin;
+			if (IsPatternMotion(target.motion.pattern)) {
+				v2f offset = MotionOffset(target.motion, elapsed_sec);
+				world_pos += state.axis_u * offset.X + state.axis_v * offset.Y;
 			}
+			state.world_current = world_pos;
 
-			case network::TARGET_CROSS: {
-				// Draw crosshair
-				int half_size = static_cast<int>(target.appearance.size / 2.0f);
-				int thickness = static_cast<int>(target.appearance.thickness);
+			// Project through the camera (same transform as Hud::calculateScreenPos)
+			v3f scene_pos = world_pos * BS - camera_offset;
+			f32 clip[4] = { scene_pos.X, scene_pos.Y, scene_pos.Z, 1.0f };
+			view_projection.multiplyWith1x4Matrix(clip);
+			in_front = clip[3] > 0.0f;
 
-				// Horizontal line
-				core::rect<s32> h_line(
-					screen_x - half_size,
-					screen_y - thickness / 2,
-					screen_x + half_size,
-					screen_y + thickness / 2
-				);
-				driver->draw2DRectangle(color, h_line);
+			if (in_front) {
+				render_x = 128.0f * (1.0f + clip[0] / clip[3]);
+				render_y = 128.0f * (1.0f - clip[1] / clip[3]);
 
-				// Vertical line
-				core::rect<s32> v_line(
-					screen_x - thickness / 2,
-					screen_y - half_size,
-					screen_x + thickness / 2,
-					screen_y + half_size
-				);
-				driver->draw2DRectangle(color, v_line);
-				break;
+				bool on_screen = render_x >= 0.0f && render_x <= 256.0f &&
+					render_y >= 0.0f && render_y <= 256.0f;
+				// Occlusion only hides the marker; the reward still follows the
+				// target's position, as it would for an object behind a wall
+				if (on_screen && !(client && IsWorldTargetOccluded(client, eye, world_pos))) {
+					DrawTargetMarker(driver, target,
+						static_cast<int>(render_x * screen_size.X / 256.0f),
+						static_cast<int>(render_y * screen_size.Y / 256.0f));
+				}
 			}
-
-			case network::TARGET_ENTITY:
-				// Entity-based targets handled by Lua mod, not rendered here
-				break;
-
-			default:
-				break;
 		}
 
 		// Calculate and register rewards for this target
 		constexpr float VIEWPORT_CENTER_X = 128.0f;
 		constexpr float VIEWPORT_CENTER_Y = 128.0f;
 
-		// Tracking accuracy reward (dense, every frame)
-		float tracking_reward = CalculateTrackingAccuracyReward(
-			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y);
+		// Tracking accuracy reward (dense, every frame); zero behind the camera
+		float tracking_reward = in_front ? CalculateTrackingAccuracyReward(
+			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y) : 0.0f;
 		registerRewardEvent("tracking_accuracy", tracking_reward);
 
 		// Target acquisition reward (sparse, only when first centered)
-		bool is_acquired = CheckTargetAcquisition(
+		bool is_acquired = in_front && CheckTargetAcquisition(
 			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y);
 
-		// Get mutable reference to state for updating acquisition flag
-		auto& mutable_state = m_impl->target_states[target_id];
-		if (is_acquired && !mutable_state.was_acquired) {
+		if (is_acquired && !state.was_acquired) {
 			// Target just became acquired - give sparse reward
 			registerRewardEvent("target_acquisition", 1.0f);
-			mutable_state.was_acquired = true;
-		} else if (!is_acquired && mutable_state.was_acquired) {
+			state.was_acquired = true;
+		} else if (!is_acquired && state.was_acquired) {
 			// Target left acquisition zone - reset flag
-			mutable_state.was_acquired = false;
+			state.was_acquired = false;
 		}
 	}
 #endif
