@@ -140,6 +140,13 @@ void set_default_settings()
 	// Hide Luanti's HUD (hotbar, crosshair, selection box) and chat in exported
 	// frames; RL HUD targets are drawn separately and stay visible
 	settings->setDefault("tracking_hide_hud", "true");
+	// Tracking reward per frame for each target: "gaussian" peaks at the
+	// viewport centre with width tracking_reward_sigma (pixels of the 256x256
+	// viewport); "linear" falls off over the viewport diagonal (the original
+	// shape, use scale 0.1 to reproduce it)
+	settings->setDefault("tracking_reward_shape", "gaussian");
+	settings->setDefault("tracking_reward_sigma", "20");
+	settings->setDefault("tracking_reward_scale", "1.0");
 	// Dataset generation mode
 	settings->setDefault("dataset_mode", "false");
 	settings->setDefault("dataset_output_dir", "./dataset_output");

@@ -11,6 +11,7 @@
 #include "nodedef.h"
 #include "constants.h"
 #include "util/numeric.h"
+#include "settings.h"
 #include "log.h"
 
 #include <IVideoDriver.h>
@@ -81,6 +82,11 @@ struct TrackingExporter::Impl {
 	float pending_frame_reward = 0.0f;
 	double stamp_cumulative_reward = 0.0;
 	uint32_t last_applied_action_seq = 0;  // GazeCommand::sequence_number of the last action received
+
+	// Tracking reward shape (tracking_reward_* settings, read at network init)
+	bool tracking_reward_gaussian = true;
+	float tracking_reward_sigma = 20.0f;  // viewport pixels
+	float tracking_reward_scale = 1.0f;
 #endif
 	bool active = false;
 	uint32_t current_session_id = 0;
@@ -173,6 +179,18 @@ bool TrackingExporter::initializeNetwork(const std::string& server_host,
 
 	m_impl->network_mode = true;
 	m_impl->active = true;
+
+	m_impl->tracking_reward_gaussian =
+		g_settings->get("tracking_reward_shape") != "linear";
+	m_impl->tracking_reward_sigma =
+		std::max(g_settings->getFloat("tracking_reward_sigma"), 1.0f);
+	m_impl->tracking_reward_scale = g_settings->getFloat("tracking_reward_scale");
+	infostream << "[Tracking]   Tracking reward: "
+	           << (m_impl->tracking_reward_gaussian ? "gaussian" : "linear")
+	           << " scale=" << m_impl->tracking_reward_scale;
+	if (m_impl->tracking_reward_gaussian)
+		infostream << " sigma=" << m_impl->tracking_reward_sigma << "px";
+	infostream << std::endl;
 
 	// Initialize target control (unchanged)
 	m_impl->target_control_socket = std::make_unique<network::UDPSocket>();
@@ -462,22 +480,27 @@ bool TrackingExporter::getAgentActions(LocalPlayer* player)
 namespace {
 
 // Calculate tracking accuracy reward based on distance to target
-// reward = k * (1.0 - dist / max_dist)
-// Where max_dist = diagonal of viewport (sqrt(256^2 + 256^2) ≈ 362 pixels)
+// linear:   reward = k * (1.0 - dist / max_dist)
+//           where max_dist = diagonal of viewport (sqrt(256^2 + 256^2) ≈ 362 pixels)
+// gaussian: reward = k * exp(-dist^2 / (2 * sigma^2))
+// The linear shape changes by only ~10% between a target near the centre and
+// a centred one, too little for an agent to learn from; the gaussian rewards
+// centring itself.
 float CalculateTrackingAccuracyReward(float target_x, float target_y,
                                        float viewport_center_x, float viewport_center_y,
-                                       float k_tracking = 0.1f)
+                                       bool gaussian, float sigma, float k_tracking)
 {
 	constexpr float MAX_DISTANCE = 362.0f;  // sqrt(256*256 + 256*256)
 
 	float dx = target_x - viewport_center_x;
 	float dy = target_y - viewport_center_y;
-	float distance = std::sqrt(dx * dx + dy * dy);
+	float distance_sq = dx * dx + dy * dy;
 
-	float normalized_distance = std::min(distance / MAX_DISTANCE, 1.0f);
-	float reward = k_tracking * (1.0f - normalized_distance);
+	if (gaussian)
+		return k_tracking * std::exp(-distance_sq / (2.0f * sigma * sigma));
 
-	return reward;
+	float normalized_distance = std::min(std::sqrt(distance_sq) / MAX_DISTANCE, 1.0f);
+	return k_tracking * (1.0f - normalized_distance);
 }
 
 // Calculate survival reward (simple per-frame reward for being alive)
@@ -1109,7 +1132,9 @@ void TrackingExporter::renderTargets(video::IVideoDriver* driver, Camera* camera
 
 		// Tracking accuracy reward (dense, every frame); zero behind the camera
 		float tracking_reward = in_front ? CalculateTrackingAccuracyReward(
-			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y) : 0.0f;
+			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y,
+			m_impl->tracking_reward_gaussian, m_impl->tracking_reward_sigma,
+			m_impl->tracking_reward_scale) : 0.0f;
 		registerRewardEvent("tracking_accuracy", tracking_reward);
 
 		// Target acquisition reward (sparse, only when first centered)
