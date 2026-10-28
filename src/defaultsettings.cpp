@@ -147,6 +147,11 @@ void set_default_settings()
 	settings->setDefault("tracking_reward_shape", "gaussian");
 	settings->setDefault("tracking_reward_sigma", "20");
 	settings->setDefault("tracking_reward_scale", "1.0");
+	// Acquisition bonus (+1 when a target enters 30 px of the centre): spent on
+	// acquisition, recharged over this many seconds while the target is off
+	// centre. 0 pays the full bonus on every entry (rewards leaving and coming
+	// back); a negative value pays it once per target
+	settings->setDefault("tracking_acquisition_recharge_time", "5");
 	// Dataset generation mode
 	settings->setDefault("dataset_mode", "false");
 	settings->setDefault("dataset_output_dir", "./dataset_output");
