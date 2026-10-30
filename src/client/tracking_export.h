@@ -13,6 +13,7 @@ namespace video {
 
 class LocalPlayer;
 class Client;
+class Camera;
 
 // Forward declarations for network types
 namespace tracking {
@@ -124,13 +125,17 @@ public:
 	 *
 	 * Viewport coordinates: (128,128) is the current look direction; a target
 	 * to the right/below turns the camera right/down (Luanti: yaw decreases
-	 * to the right, positive pitch looks down)
+	 * to the right, positive pitch looks down). A saccade to (x, y) turns by
+	 * the angle that pixel subtends, so it lands on what was drawn there.
 	 *
 	 * @param camera_yaw   Camera yaw in degrees (modified in place)
 	 * @param camera_pitch Camera pitch in degrees (modified in place)
+	 * @param fov_x        Horizontal field of view in radians
+	 * @param fov_y        Vertical field of view in radians
 	 * @return true if a command was applied
 	 */
-	bool applyCameraControl(float &camera_yaw, float &camera_pitch);
+	bool applyCameraControl(float &camera_yaw, float &camera_pitch,
+	                        float fov_x, float fov_y);
 
 	/**
 	 * Register a reward event from game logic
@@ -221,13 +226,20 @@ public:
 	int processTargetCommands();
 
 	/**
-	 * Render active targets as HUD overlays
-	 * Draws targets on top of rendered frame
-	 * Called after exportFramebuffer(), before endScene()
+	 * Render active targets as HUD overlays and register their rewards
+	 * Draws targets on top of the rendered frame
+	 * Called before exportFramebuffer(), so the exported frame shows them
+	 *
+	 * SCREEN targets are drawn at their viewport position. WORLD and VIEW
+	 * targets are projected through the camera, so their screen position and
+	 * reward follow where the agent looks; they are not drawn when behind the
+	 * camera or hidden behind nodes that block light.
 	 *
 	 * @param driver Irrlicht video driver for rendering
+	 * @param camera Game camera (projection and position for world targets)
+	 * @param client Client (map access for occlusion checks)
 	 */
-	void renderTargets(video::IVideoDriver* driver);
+	void renderTargets(video::IVideoDriver* driver, Camera* camera, Client* client);
 
 private:
 	struct Impl;

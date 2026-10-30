@@ -1143,7 +1143,8 @@ void Game::run()
 		// built from cam_view; applied unsmoothed so saccades are ballistic
 		if (m_tracking_exporter && m_tracking_exporter->isActive() &&
 				m_tracking_exporter->applyCameraControl(
-					cam_view_target.camera_yaw, cam_view_target.camera_pitch)) {
+					cam_view_target.camera_yaw, cam_view_target.camera_pitch,
+					camera->getFovX(), camera->getFovY())) {
 			cam_view = cam_view_target;
 		}
 #endif
@@ -4287,7 +4288,7 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 		Render tracking targets as HUD overlays (before endScene)
 	*/
 	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
-		m_tracking_exporter->renderTargets(this->driver);
+		m_tracking_exporter->renderTargets(this->driver, camera, client);
 	}
 #endif
 
