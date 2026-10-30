@@ -57,6 +57,10 @@ struct TrackingExporter::Impl {
 		float initial_x = 0.0f;
 		float initial_y = 0.0f;
 		bool was_acquired = false;  // Track if target was previously centered (for acquisition rewards)
+		// Fraction of the acquisition bonus the next acquisition pays: spent on
+		// acquisition, recharged while the target is off centre
+		float acquisition_charge = 1.0f;
+		uint64_t last_render_time_us = 0;
 
 		// WORLD/VIEW anchors, in world node coordinates. Resolved on the first
 		// render (VIEW needs the camera); motion moves along axis_u/axis_v.
@@ -87,6 +91,9 @@ struct TrackingExporter::Impl {
 	bool tracking_reward_gaussian = true;
 	float tracking_reward_sigma = 20.0f;  // viewport pixels
 	float tracking_reward_scale = 1.0f;
+	// Seconds off target to recharge the acquisition bonus fully
+	// (0 = full bonus on every entry, negative = once per target)
+	float acquisition_recharge_time = 5.0f;
 #endif
 	bool active = false;
 	uint32_t current_session_id = 0;
@@ -185,12 +192,15 @@ bool TrackingExporter::initializeNetwork(const std::string& server_host,
 	m_impl->tracking_reward_sigma =
 		std::max(g_settings->getFloat("tracking_reward_sigma"), 1.0f);
 	m_impl->tracking_reward_scale = g_settings->getFloat("tracking_reward_scale");
+	m_impl->acquisition_recharge_time =
+		g_settings->getFloat("tracking_acquisition_recharge_time");
 	infostream << "[Tracking]   Tracking reward: "
 	           << (m_impl->tracking_reward_gaussian ? "gaussian" : "linear")
 	           << " scale=" << m_impl->tracking_reward_scale;
 	if (m_impl->tracking_reward_gaussian)
 		infostream << " sigma=" << m_impl->tracking_reward_sigma << "px";
-	infostream << std::endl;
+	infostream << ", acquisition recharge=" << m_impl->acquisition_recharge_time << "s"
+	           << std::endl;
 
 	// Initialize target control (unchanged)
 	m_impl->target_control_socket = std::make_unique<network::UDPSocket>();
@@ -1141,13 +1151,25 @@ void TrackingExporter::renderTargets(video::IVideoDriver* driver, Camera* camera
 		bool is_acquired = in_front && CheckTargetAcquisition(
 			render_x, render_y, VIEWPORT_CENTER_X, VIEWPORT_CENTER_Y);
 
+		float dt = state.last_render_time_us > 0 && current_time_us > state.last_render_time_us
+			? (current_time_us - state.last_render_time_us) * 1e-6f : 0.0f;
+		state.last_render_time_us = current_time_us;
+
 		if (is_acquired && !state.was_acquired) {
-			// Target just became acquired - give sparse reward
-			registerRewardEvent("target_acquisition", 1.0f);
+			// Target just became acquired - pay whatever bonus has recharged,
+			// so leaving the target and coming straight back pays almost nothing
+			if (state.acquisition_charge > 0.0f)
+				registerRewardEvent("target_acquisition", state.acquisition_charge);
+			state.acquisition_charge = 0.0f;
 			state.was_acquired = true;
-		} else if (!is_acquired && state.was_acquired) {
-			// Target left acquisition zone - reset flag
+		} else if (!is_acquired) {
 			state.was_acquired = false;
+			const float recharge_time = m_impl->acquisition_recharge_time;
+			if (recharge_time == 0.0f)
+				state.acquisition_charge = 1.0f;
+			else if (recharge_time > 0.0f)
+				state.acquisition_charge = std::min(1.0f,
+					state.acquisition_charge + dt / recharge_time);
 		}
 	}
 #endif
