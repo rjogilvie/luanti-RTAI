@@ -1,5 +1,7 @@
 # Luanti Network Tracking - Success Summary
 
+> **⚠️ Historical (Oct 13 2025).** This records the UDP broadcast test results. That path was replaced by FrameProducer P2P on 2025-11-08; see [RTAI_FORK.md](RTAI_FORK.md).
+
 ## Achievement
 
 Successfully implemented and tested UDP broadcast-based frame distribution for Luanti's tracking export system.

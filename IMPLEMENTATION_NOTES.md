@@ -433,7 +433,7 @@ add_redundancy_packets(chunks, redundancy=0.1);  // 10% overhead
 - UDP Broadcasting: RFC 919
 - ZSTD Compression: https://github.com/facebook/zstd
 - Luanti Network Code: `src/network/` directory
-- Tracking Pipeline: `/home/robert/CodeProjects/visionlearningpipeline/`
+- Tracking Pipeline: `<repo>/visionlearningpipeline/`
 
 ## Credits
 
