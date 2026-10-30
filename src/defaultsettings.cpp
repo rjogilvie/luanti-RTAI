@@ -137,6 +137,9 @@ void set_default_settings()
 	settings->setDefault("tracking_server_host", "127.0.0.1");
 	settings->setDefault("tracking_tcp_port", "7001");
 	settings->setDefault("tracking_client_id", "luanti_producer");
+	// Hide Luanti's HUD (hotbar, crosshair, selection box) and chat in exported
+	// frames; RL HUD targets are drawn separately and stay visible
+	settings->setDefault("tracking_hide_hud", "true");
 	// Dataset generation mode
 	settings->setDefault("dataset_mode", "false");
 	settings->setDefault("dataset_output_dir", "./dataset_output");
