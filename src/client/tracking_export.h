@@ -128,6 +128,11 @@ public:
 	 * to the right, positive pitch looks down). A saccade to (x, y) turns by
 	 * the angle that pixel subtends, so it lands on what was drawn there.
 	 *
+	 * Body frame: CMD_BODY sets a body direction and an orbit range. From
+	 * then on the camera is the body direction plus an eye offset clamped to
+	 * that range, CMD_EYE_POSITION sets the eye offset directly, CMD_RESET
+	 * recentres the eye, and reward stamps report the eye position.
+	 *
 	 * @param camera_yaw   Camera yaw in degrees (modified in place)
 	 * @param camera_pitch Camera pitch in degrees (modified in place)
 	 * @param fov_x        Horizontal field of view in radians

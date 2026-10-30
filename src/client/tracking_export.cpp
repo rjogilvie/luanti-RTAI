@@ -94,6 +94,20 @@ struct TrackingExporter::Impl {
 	// Seconds off target to recharge the acquisition bonus fully
 	// (0 = full bonus on every entry, negative = once per target)
 	float acquisition_recharge_time = 5.0f;
+
+	// Body frame (CMD_BODY): the camera is the body direction plus an eye
+	// offset, clamped to the orbit range (0 = unlimited). Degrees, Luanti
+	// convention: yaw decreases turning right, positive pitch looks down.
+	bool body_set = false;
+	float body_yaw = 0.0f;
+	float body_pitch = 0.0f;
+	float eye_range_x = 0.0f;
+	float eye_range_y = 0.0f;
+	// Camera orientation and FOV as of the latest camera control call
+	float camera_yaw = 0.0f;
+	float camera_pitch = 0.0f;
+	float fov_x_deg = 0.0f;
+	float fov_y_deg = 0.0f;
 #endif
 	bool active = false;
 	uint32_t current_session_id = 0;
@@ -411,6 +425,16 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 		stamp.cumulative_reward = m_impl->stamp_cumulative_reward;
 		stamp.frame_reward = m_impl->pending_frame_reward;
 		stamp.sources = std::move(m_impl->pending_sources);
+		if (m_impl->body_set) {
+			network::GazeState gaze;
+			gaze.eye_x = wrapDegrees_180(m_impl->body_yaw - m_impl->camera_yaw);
+			gaze.eye_y = m_impl->camera_pitch - m_impl->body_pitch;
+			gaze.body_yaw = m_impl->body_yaw;
+			gaze.body_pitch = m_impl->body_pitch;
+			gaze.fov_x = m_impl->fov_x_deg;
+			gaze.fov_y = m_impl->fov_y_deg;
+			stamp.gaze = gaze;
+		}
 		m_impl->pending_sources.clear();
 		m_impl->pending_frame_reward = 0.0f;
 		m_impl->frame_producer->SendFrameRewards(stamp);
@@ -691,6 +715,12 @@ bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch
 	if (!m_impl->network_mode || !m_impl->frame_producer)
 		return false;
 
+	// Reported in reward stamps (eye position = camera relative to the body)
+	m_impl->camera_yaw = camera_yaw;
+	m_impl->camera_pitch = camera_pitch;
+	m_impl->fov_x_deg = fov_x * core::RADTODEG;
+	m_impl->fov_y_deg = fov_y * core::RADTODEG;
+
 	// Poll for action command from FrameProducer
 	auto cmd_opt = m_impl->frame_producer->PollAction();
 	if (!cmd_opt) {
@@ -787,9 +817,33 @@ bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch
 		}
 
 		case CMD_RESET: {
-			// Return to center (0, 0)
-			new_yaw = 0.0f;
-			new_pitch = 0.0f;
+			// Return to center: the body direction once one is set, else (0, 0)
+			new_yaw = m_impl->body_set ? m_impl->body_yaw : 0.0f;
+			new_pitch = m_impl->body_set ? m_impl->body_pitch : 0.0f;
+			applied = true;
+			break;
+		}
+
+		case CMD_BODY: {
+			// Set the body direction and orbit range; the eye looks straight ahead
+			m_impl->body_set = true;
+			m_impl->body_yaw = wrapDegrees_0_360(cmd.target_x);
+			m_impl->body_pitch = std::max(-90.0f, std::min(90.0f, cmd.target_y));
+			m_impl->eye_range_x = std::max(cmd.velocity_x, 0.0f);
+			m_impl->eye_range_y = std::max(cmd.velocity_y, 0.0f);
+			new_yaw = m_impl->body_yaw;
+			new_pitch = m_impl->body_pitch;
+			applied = true;
+			break;
+		}
+
+		case CMD_EYE_POSITION: {
+			// Absolute eye-in-head angle: degrees right of / below the body
+			// direction. Needs a body direction (CMD_BODY).
+			if (!m_impl->body_set)
+				break;
+			new_yaw = m_impl->body_yaw - cmd.target_x;
+			new_pitch = m_impl->body_pitch + cmd.target_y;
 			applied = true;
 			break;
 		}
@@ -800,9 +854,23 @@ bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch
 			break;
 	}
 
+	if (applied && m_impl->body_set) {
+		// Keep the eye within its orbit range around the body direction
+		float eye_x = wrapDegrees_180(m_impl->body_yaw - new_yaw);
+		float eye_y = new_pitch - m_impl->body_pitch;
+		if (m_impl->eye_range_x > 0.0f)
+			eye_x = std::max(-m_impl->eye_range_x, std::min(m_impl->eye_range_x, eye_x));
+		if (m_impl->eye_range_y > 0.0f)
+			eye_y = std::max(-m_impl->eye_range_y, std::min(m_impl->eye_range_y, eye_y));
+		new_yaw = m_impl->body_yaw - eye_x;
+		new_pitch = m_impl->body_pitch + eye_y;
+	}
+
 	if (applied) {
 		camera_yaw = new_yaw;
 		camera_pitch = std::max(-90.0f, std::min(90.0f, new_pitch));
+		m_impl->camera_yaw = camera_yaw;
+		m_impl->camera_pitch = camera_pitch;
 		m_action_stats.actions_applied++;
 	} else {
 		m_action_stats.actions_failed++;
