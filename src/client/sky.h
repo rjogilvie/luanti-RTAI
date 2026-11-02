@@ -46,6 +46,10 @@ public:
 
 	float getBrightness() { return m_brightness; }
 
+	// Jump brightness and colours to their targets on the next update instead
+	// of fading into them (after a sudden time-of-day change)
+	void settle() { m_settle = true; }
+
 	video::SColor getBgColor() const
 	{
 		return m_visible ? m_bgcolor : m_fallback_bg_color;
@@ -165,6 +169,7 @@ private:
 	// Used when m_visible=false
 	video::SColor m_fallback_bg_color = video::SColor(255, 255, 255, 255);
 	bool m_first_update = true; // Set before the sky is updated for the first time
+	bool m_settle = false;      // See settle()
 	float m_time_of_day;
 	float m_time_brightness;
 	bool m_sunlight_seen;
