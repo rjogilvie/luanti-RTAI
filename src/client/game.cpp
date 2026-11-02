@@ -547,6 +547,9 @@ struct GameRunData {
 	v3f update_draw_list_last_cam_dir;
 
 	float time_of_day_smooth;
+
+	// Game time at the previous frame, for detecting jumps (tracking export)
+	float tracking_time_of_day = -1.0f;
 };
 
 class Game;
@@ -4043,6 +4046,21 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 		time_of_day_smooth = time_of_day_smooth * (1.0 - todsm)
 				+ time_of_day * todsm;
 
+#ifdef ENABLE_TRACKING_EXPORT
+	// The RL env jumps the game time between episodes (CMD_TIME_OF_DAY): show
+	// the new lighting at once instead of fading into it over seconds
+	if (m_tracking_exporter && m_tracking_exporter->isActive()) {
+		float jump = std::fabs(time_of_day - runData.tracking_time_of_day);
+		jump = std::min(jump, 1.0f - jump);
+		// Normal time speed advances ~1e-5 of a day per frame
+		if (runData.tracking_time_of_day >= 0.0f && jump > 0.001f) {
+			time_of_day_smooth = time_of_day;
+			sky->settle();
+		}
+		runData.tracking_time_of_day = time_of_day;
+	}
+#endif
+
 	runData.time_of_day_smooth = time_of_day_smooth;
 
 	sky->update(time_of_day_smooth, time_brightness, direct_brightness,
@@ -4325,6 +4343,7 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 			}
 		}
 
+		m_tracking_exporter->updateWorldState(client, camera);
 		m_tracking_exporter->exportFramebuffer(this->driver);
 	}
 #endif
@@ -4419,7 +4438,9 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 			u64 timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
 				std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 			m_frame_dumper->writeFrameMetadata(frame_num, timestamp_us,
-				pos.X, pos.Y, pos.Z, ds_player->getYaw(), ds_player->getPitch());
+				pos.X, pos.Y, pos.Z, ds_player->getYaw(), ds_player->getPitch(),
+				client->getEnv().getTimeOfDayF(),
+				client->getEnv().getDayNightRatio() / 1000.0f);
 		}
 
 		// Auto-shutdown when max frames reached

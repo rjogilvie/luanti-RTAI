@@ -172,7 +172,8 @@ void FrameDumper::dumpInstanceIDs(const u32 *instance_ids, u32 width, u32 height
 
 void FrameDumper::writeFrameMetadata(u64 frame_num, u64 timestamp_us,
                                       float pos_x, float pos_y, float pos_z,
-                                      float yaw, float pitch)
+                                      float yaw, float pitch,
+                                      float time_of_day, float day_night_ratio)
 {
 	if (!m_active || !m_metadata_file.is_open())
 		return;
@@ -182,6 +183,8 @@ void FrameDumper::writeFrameMetadata(u64 frame_num, u64 timestamp_us,
 	                << ", \"pos\": [" << pos_x << ", " << pos_y << ", " << pos_z << "]"
 	                << ", \"yaw\": " << yaw
 	                << ", \"pitch\": " << pitch
+	                << ", \"time_of_day\": " << time_of_day
+	                << ", \"day_night_ratio\": " << day_night_ratio
 	                << "}\n";
 
 	// Flush periodically to avoid data loss

@@ -108,6 +108,13 @@ struct TrackingExporter::Impl {
 	float camera_pitch = 0.0f;
 	float fov_x_deg = 0.0f;
 	float fov_y_deg = 0.0f;
+
+	// Lighting and camera position for reward stamps (updateWorldState)
+	bool world_set = false;
+	network::WorldState world;
+	// Game time requested by CMD_TIME_OF_DAY (0-24000), applied by updateWorldState
+	bool time_request_pending = false;
+	u32 time_request = 0;
 #endif
 	bool active = false;
 	uint32_t current_session_id = 0;
@@ -435,6 +442,8 @@ void TrackingExporter::exportFramebuffer(video::IVideoDriver* driver)
 			gaze.fov_y = m_impl->fov_y_deg;
 			stamp.gaze = gaze;
 		}
+		if (m_impl->world_set)
+			stamp.world = m_impl->world;
 		m_impl->pending_sources.clear();
 		m_impl->pending_frame_reward = 0.0f;
 		m_impl->frame_producer->SendFrameRewards(stamp);
@@ -848,6 +857,16 @@ bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch
 			break;
 		}
 
+		case CMD_TIME_OF_DAY: {
+			// Game time 0-24000; sent to the server by updateWorldState. The
+			// camera is unchanged.
+			m_impl->time_request = static_cast<u32>(
+				std::max(0.0f, std::min(23999.0f, cmd.target_x)));
+			m_impl->time_request_pending = true;
+			applied = true;
+			break;
+		}
+
 		case CMD_NONE:
 		default:
 			// No action
@@ -879,6 +898,28 @@ bool TrackingExporter::applyCameraControl(float &camera_yaw, float &camera_pitch
 	return applied;
 #else
 	return false;
+#endif
+}
+
+void TrackingExporter::updateWorldState(Client* client, Camera* camera)
+{
+#ifdef ENABLE_TRACKING_EXPORT
+	if (!m_impl->active || !client || !camera)
+		return;
+
+	ClientEnvironment &env = client->getEnv();
+	m_impl->world.time_of_day = env.getTimeOfDayF();
+	m_impl->world.day_night_ratio = env.getDayNightRatio() / 1000.0f;
+	v3f pos = camera->getPosition() / BS;
+	m_impl->world.camera_x = pos.X;
+	m_impl->world.camera_y = pos.Y;
+	m_impl->world.camera_z = pos.Z;
+	m_impl->world_set = true;
+
+	if (m_impl->time_request_pending) {
+		m_impl->time_request_pending = false;
+		client->sendChatMessage(utf8_to_wide("/time " + std::to_string(m_impl->time_request)));
+	}
 #endif
 }
 

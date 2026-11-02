@@ -98,6 +98,16 @@ public:
 	void exportFramebuffer(video::IVideoDriver* driver);
 
 	/**
+	 * Record the lighting and camera position for the next frame's reward
+	 * stamp, and apply a pending CMD_TIME_OF_DAY by sending "/time" to the
+	 * server (needs the settime privilege). Called before exportFramebuffer().
+	 *
+	 * @param client Client (environment time and light, chat)
+	 * @param camera Game camera (position)
+	 */
+	void updateWorldState(Client* client, Camera* camera);
+
+	/**
 	 * Export current player state to shared memory
 	 * Called each frame in game loop
 	 *
@@ -132,6 +142,9 @@ public:
 	 * then on the camera is the body direction plus an eye offset clamped to
 	 * that range, CMD_EYE_POSITION sets the eye offset directly, CMD_RESET
 	 * recentres the eye, and reward stamps report the eye position.
+	 *
+	 * CMD_TIME_OF_DAY leaves the camera alone and queues a game time change
+	 * that updateWorldState() sends to the server.
 	 *
 	 * @param camera_yaw   Camera yaw in degrees (modified in place)
 	 * @param camera_pitch Camera pitch in degrees (modified in place)
