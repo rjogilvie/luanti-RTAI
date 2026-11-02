@@ -19,7 +19,7 @@ namespace tracking {
  *   rgb/frame_NNNNNN.ppm          - Full-resolution RGB video frames
  *   semantic_color/frame_NNNNNN.ppm - Semantic mask as RGB color image
  *   semantic_raw/frame_NNNNNN.bin - Raw content_t IDs (uint16 binary)
- *   metadata.jsonl                - Per-frame metadata (position, orientation)
+ *   metadata.jsonl                - Per-frame metadata (position, orientation, lighting)
  *   content_map.json              - content_t -> {name, color} mapping
  */
 class FrameDumper {
@@ -89,10 +89,14 @@ public:
 
 	/**
 	 * Write per-frame metadata as a JSONL line
+	 *
+	 * @param time_of_day     Game time, 0-1 (0.5 = noon)
+	 * @param day_night_ratio Daylight level, 0 (night) - 1 (day)
 	 */
 	void writeFrameMetadata(u64 frame_num, u64 timestamp_us,
 	                        float pos_x, float pos_y, float pos_z,
-	                        float yaw, float pitch);
+	                        float yaw, float pitch,
+	                        float time_of_day, float day_night_ratio);
 
 	/**
 	 * Write the content_t -> {name, color} mapping JSON file

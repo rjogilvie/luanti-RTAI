@@ -4438,7 +4438,9 @@ void Game::drawScene(ProfilerGraph *graph, RunStats *stats)
 			u64 timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
 				std::chrono::high_resolution_clock::now().time_since_epoch()).count();
 			m_frame_dumper->writeFrameMetadata(frame_num, timestamp_us,
-				pos.X, pos.Y, pos.Z, ds_player->getYaw(), ds_player->getPitch());
+				pos.X, pos.Y, pos.Z, ds_player->getYaw(), ds_player->getPitch(),
+				client->getEnv().getTimeOfDayF(),
+				client->getEnv().getDayNightRatio() / 1000.0f);
 		}
 
 		// Auto-shutdown when max frames reached
