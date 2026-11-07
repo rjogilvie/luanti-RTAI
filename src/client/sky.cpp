@@ -311,14 +311,17 @@ void Sky::update(float time_of_day, float time_brightness,
 	float direct_brightness, bool sunlight_seen,
 	CameraMode cam_mode, float yaw, float pitch)
 {
-	// Stabilize initial brightness and color values by flooding updates
-	if (m_first_update) {
+	// Stabilize initial brightness and color values by flooding updates.
+	// settle() floods longer: colours move only 2% per update.
+	if (m_first_update || m_settle) {
 		/*dstream<<"First update with time_of_day="<<time_of_day
 				<<" time_brightness="<<time_brightness
 				<<" direct_brightness="<<direct_brightness
 				<<" sunlight_seen="<<sunlight_seen<<std::endl;*/
+		const u32 updates = m_settle ? 300 : 100;
 		m_first_update = false;
-		for (u32 i = 0; i < 100; i++) {
+		m_settle = false;
+		for (u32 i = 0; i < updates; i++) {
 			update(time_of_day, time_brightness, direct_brightness,
 					sunlight_seen, cam_mode, yaw, pitch);
 		}
